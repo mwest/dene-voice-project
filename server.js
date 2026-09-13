@@ -14,12 +14,11 @@ const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(import.meta.dirname, 'public');
 const PRIMARY_HOST = new URL(APP_URL).hostname;
 
-// Hostnames that should bounce to the primary origin (the old Dene Voice
-// Library host, kept as a redirect only — it is not part of the architecture).
+// Hostnames that should bounce to the primary origin (the retired
+// indigenous.ai hosts, kept as redirects only while old links exist).
 const LEGACY_HOSTS = new Set(
-  // ?? not ||: an explicitly empty LEGACY_HOSTS disables the redirect (used
-  // while indigenous.ai DNS is not live yet, so app.dene.ca keeps serving).
-  (process.env.LEGACY_HOSTS ?? 'app.dene.ca').split(',').map((h) => h.trim()).filter(Boolean)
+  // ?? not ||: an explicitly empty LEGACY_HOSTS disables the redirect.
+  (process.env.LEGACY_HOSTS ?? 'indigenous.ai,www.indigenous.ai').split(',').map((h) => h.trim()).filter(Boolean)
 );
 
 const app = express();
@@ -81,7 +80,7 @@ app.get('/{*splat}', (req, res) => res.redirect('/'));
 const userCount = db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
 
 app.listen(PORT, () => {
-  console.log(`Indigenous.ai running at http://localhost:${PORT} (Language at /language)`);
+  console.log(`Dene Voice Project running at http://localhost:${PORT} (Language at /language)`);
   if (userCount === 0) {
     console.log('');
     console.log('No accounts exist yet. Create the superadmin with:');
