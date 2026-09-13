@@ -1,22 +1,20 @@
-# Indigenous.ai
+# Dene Voice Project
 
-**Indigenous.ai is the platform — a product for Indigenous governments. Language is its
-first application.** This repository is the Indigenous.ai platform codebase: one modular
-monolith serving the product root at `https://indigenous.ai` and the Language application
-at `https://indigenous.ai/language`.
-
-The Language application is a members-only database of translation pairs with audio
-recordings (originally built for the Dene Voice Project; see
-`dene-translation-db-prd.md` for the original PRD): projects (dialects/communities),
-role-based access, translation entries with full Unicode orthography support, audio
-attachments with automatic duration tracking, search and filtering, per-project
-dashboards, and CSV/JSON export for STT/TTS training pipelines.
+**The Dene Voice Project** is a members-only database of Dene language knowledge —
+translation pairs, documents, and audio recordings — served at
+`https://app.dene.ca` (one modular monolith; the app lives under `/language`).
+It offers organizations (communities/governments), role-based access, entries
+with full Unicode orthography support, document ingestion with hybrid
+keyword+semantic search, audio recording with lossless masters and automatic
+duration tracking, campaign-based paid work and compensation tracking, and
+CSV/JSON/ZIP export for STT/TTS training pipelines. (See
+`dene-translation-db-prd.md` for the original PRD.)
 
 ## Architecture: platform vs. application
 
 Module ownership for new code (a direction, not a mandate to move working code):
 
-- **Platform (Indigenous.ai)** — users, authentication/sessions, organizations,
+- **Platform layer** — users, authentication/sessions, organizations,
   organization memberships, application entitlements (`organization_apps`), payments
   primitives. API under `/api/platform/...` (the `platform` router in `src/api.js`).
 - **Language application** — projects, entries, recordings, consent, work items,
@@ -45,8 +43,8 @@ list/search surfaces intersect visibility with entitled organizations. A missing
 Organization identity is platform-wide; operational permissions are application-scoped.
 Do not treat a Language role (e.g. `translator`) as a platform role, and do not
 generalize Language domain concepts (speakers, corpora, orthographies) into platform
-concepts until a second real application proves the abstraction. `app.dene.ca` is a
-redirect only — it is not part of the architecture.
+concepts until a second real application proves the abstraction. The retired
+`indigenous.ai` hosts are 301 redirects only — they are not part of the architecture.
 
 ## Stack
 
@@ -254,13 +252,14 @@ rejected with a clear message and the entry is left unchanged.
 
 ## Deployment (Fly.io, Toronto)
 
-The app runs at https://indigenous.ai on Fly.io in the `yyz` (Toronto) region — data
+The app runs at https://app.dene.ca on Fly.io in the `yyz` (Toronto) region — data
 stays in Canada. Config is in `fly.toml`; the SQLite DB and all audio live on a 10 GB
 encrypted volume (`dene_data`) mounted at `/app/data`, with automatic daily snapshots
 (5-day retention). The Fly app keeps its historical internal name
 (`dene-translation-db` — Fly apps can't be renamed); the product origin is set by DNS +
-certs. `app.dene.ca` remains only as a 301 redirect to `https://indigenous.ai/language`
-(hosts listed in `LEGACY_HOSTS`); set `APP_URL` to change the primary origin.
+certs. `indigenous.ai` and `www.indigenous.ai` remain only as 301 redirects to
+`https://app.dene.ca/language` (hosts listed in `LEGACY_HOSTS`); set `APP_URL` to
+change the primary origin.
 
 Common operations (flyctl):
 
@@ -269,7 +268,7 @@ fly deploy --remote-only --ha=false   # ship the current working tree
 fly logs                              # tail production logs
 fly status                            # machine state
 fly ssh console                       # shell on the production machine
-fly certs check indigenous.ai         # TLS certificate status (also: app.dene.ca redirect cert)
+fly certs check app.dene.ca           # TLS certificate status (also: indigenous.ai redirect certs)
 fly ssh console -C "node scripts/create-superadmin.js <email> <name> <password>"
 ```
 
