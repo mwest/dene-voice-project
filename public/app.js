@@ -1,4 +1,4 @@
-/* Indigenous.ai — Language: single-page app (no build step) */
+/* Dene Voice Project — single-page app (no build step) */
 'use strict';
 
 // ---------------------------------------------------------------------------

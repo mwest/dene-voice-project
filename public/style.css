@@ -39,7 +39,6 @@ body {
   z-index: 30;
 }
 .brand { font-weight: 700; font-size: 1.05rem; white-space: nowrap; }
-.brand-app { font-weight: 500; color: var(--accent); }
 #nav-toggle { font-size: 1.1rem; padding: 0.25rem 0.6rem; display: none; }
 #appbar .user-menu { margin-left: auto; }
 
