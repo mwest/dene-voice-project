@@ -2,8 +2,8 @@
 // Degrades gracefully: if RESEND_API_KEY is not set, sendMail() reports
 // {sent:false} and callers fall back to showing the action link to the admin.
 
-const FROM = process.env.MAIL_FROM || 'indigenous.ai <noreply@indigenous.ai>';
-export const APP_URL = (process.env.APP_URL || 'https://indigenous.ai').replace(/\/$/, '');
+const FROM = process.env.MAIL_FROM || 'Dene Voice Project <noreply@app.dene.ca>';
+export const APP_URL = (process.env.APP_URL || 'https://app.dene.ca').replace(/\/$/, '');
 
 export const mailEnabled = () => !!process.env.RESEND_API_KEY;
 
@@ -35,10 +35,10 @@ export async function sendMail({ to, subject, text, html }) {
 
 const wrap = (body) => `
   <div style="font-family:sans-serif;max-width:480px;margin:0 auto;color:#222">
-    <h2 style="color:#1f4e5f">indigenous.ai</h2>
+    <h2 style="color:#1f4e5f">Dene Voice Project</h2>
     ${body}
     <p style="color:#888;font-size:12px;margin-top:24px">
-      indigenous.ai — if you weren’t expecting this email you can ignore it.</p>
+      Dene Voice Project · dene.ca — if you weren’t expecting this email you can ignore it.</p>
   </div>`;
 
 // User-provided values rendered into HTML email bodies must be escaped.
@@ -48,10 +48,10 @@ const escHtml = (s) =>
 
 export function inviteEmail({ name, link, invitedBy, projectName }) {
   const intro = projectName
-    ? `${invitedBy} added you to the <b>${projectName}</b> project on indigenous.ai Language.`
-    : `${invitedBy} created an account for you on indigenous.ai.`;
+    ? `${invitedBy} added you to the <b>${projectName}</b> campaign on the Dene Voice Project.`
+    : `${invitedBy} created an account for you on the Dene Voice Project.`;
   return {
-    subject: 'Your indigenous.ai account',
+    subject: 'Your Dene Voice Project account',
     text: `Hi ${name},\n\n${intro.replace(/<[^>]+>/g, '')}\n\nSet your password to get started (link valid for 7 days):\n${link}\n`,
     html: wrap(`<p>Hi ${name},</p><p>${intro}</p>
       <p><a href="${link}" style="background:#1f4e5f;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none">Set your password</a></p>
@@ -90,7 +90,7 @@ export function requestNotifyEmail({ name, email, dialect, details, fileCount, l
 
 export function resetEmail({ name, link }) {
   return {
-    subject: 'Reset your indigenous.ai password',
+    subject: 'Reset your Dene Voice Project password',
     text: `Hi ${name},\n\nSomeone (hopefully you) asked to reset your password.\n\nReset it here (link valid for 2 hours):\n${link}\n\nIf this wasn’t you, you can ignore this email.\n`,
     html: wrap(`<p>Hi ${name},</p><p>Someone (hopefully you) asked to reset your password.</p>
       <p><a href="${link}" style="background:#1f4e5f;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none">Reset password</a></p>

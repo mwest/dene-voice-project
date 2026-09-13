@@ -401,7 +401,7 @@ function renderShell() {
         ${orgs.length > 1
           ? `<select id="org-switcher">${orgs.map((o) =>
               `<option value="${o.id}" ${o.id === org?.id ? 'selected' : ''}>${esc(o.name)}</option>`).join('')}</select>`
-          : `<span class="context-fixed">${esc(org?.name ?? 'indigenous.ai')}</span>`}
+          : `<span class="context-fixed">${esc(org?.name ?? 'Dene Voice Project')}</span>`}
       </label>
     </div>`;
 
@@ -575,7 +575,7 @@ function renderLogin() {
   renderTopbar();
   view.innerHTML = `
     <div class="login-wrap">
-      <div class="brand-big">indigenous.ai</div>
+      <div class="brand-big">Dene Voice Project</div>
       <div class="card">
         <form id="login-form">
           <label class="field"><span>Email</span>
@@ -610,7 +610,7 @@ function renderForgot() {
   renderTopbar();
   view.innerHTML = `
     <div class="login-wrap">
-      <div class="brand-big">indigenous.ai</div>
+      <div class="brand-big">Dene Voice Project</div>
       <div class="card">
         <form id="forgot-form">
           <p>Enter your account email and we’ll send you a link to reset your password.</p>
@@ -638,7 +638,7 @@ function renderSetPassword(token) {
   renderTopbar();
   view.innerHTML = `
     <div class="login-wrap">
-      <div class="brand-big">indigenous.ai</div>
+      <div class="brand-big">Dene Voice Project</div>
       <div class="card" id="setpw-card"><p>Checking your link…</p></div>
     </div>`;
   (async () => {
@@ -683,7 +683,7 @@ function renderRequestStart() {
   renderTopbar();
   view.innerHTML = `
     <div class="login-wrap">
-      <div class="brand-big">indigenous.ai</div>
+      <div class="brand-big">Dene Voice Project</div>
       <div class="card">
         <form id="request-start-form">
           <p>Looking for a Dene translation? Enter your email and we’ll send you a
@@ -715,7 +715,7 @@ function renderRequestForm(token) {
   renderTopbar();
   view.innerHTML = `
     <div class="request-wrap">
-      <div class="brand-big">indigenous.ai</div>
+      <div class="brand-big">Dene Voice Project</div>
       <div class="card" id="request-card"><p>Checking your link…</p></div>
     </div>`;
   (async () => {
