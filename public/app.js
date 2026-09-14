@@ -11,7 +11,7 @@
 const PLATFORM_API =
   /^\/(login$|logout$|password\/|me$|me\/(password|name)$|orgs$|orgs\/|users$|users\/|admin\/)/;
 const apiUrl = (path) =>
-  (path.includes('/consent-profiles') || PLATFORM_API.test(path) === false
+  (path.includes('/consent-profiles') || path.includes('/public-site') || PLATFORM_API.test(path) === false
     ? '/api/language'
     : '/api/platform') + path;
 
@@ -431,7 +431,8 @@ function renderShell() {
         ${navLink('#/people', 'People')}
         ${navLink('#/compensation', 'Compensation')}
         ${navLink('#/projects', 'Campaigns')}
-        ${navLink('#/consent', 'Consent')}</div>`);
+        ${navLink('#/consent', 'Consent')}
+        ${navLink('#/public-site', 'Public site')}</div>`);
     }
   }
   if (state.me.user.is_superadmin) {
@@ -1432,7 +1433,48 @@ async function renderEntryDetail(id) {
       </form>
     </div>
 
-    ${recordingsCard}`;
+    ${recordingsCard}
+    ${entry.publication ? `
+    <div class="card" id="publication-card">
+      <h2 style="margin-top:0">Public site</h2>
+      <p style="margin:0 0 0.6rem">
+        Entry
+        <button class="small ${entry.publication.entry_status === 'public' ? 'secondary' : ''}" id="pub-entry-toggle">
+          ${entry.publication.entry_status === 'public' ? 'Published ✓ — Unpublish' : 'Publish'}
+        </button>
+        ${entry.publication.reasons.length
+          ? `<span style="color:var(--muted)"> · not publicly visible: ${esc(entry.publication.reasons.join('; '))}</span>`
+          : '<span class="badge status-verified"> publicly visible</span>'}
+      </p>
+      ${entry.publication.recordings.length ? `
+      <div>${entry.publication.recordings.map((pr) => `
+        <div class="version-row">
+          <span>${pr.language === 'english' ? 'English' : 'Dene'} recording
+            ${pr.consent_public ? '' : '<span class="badge incomplete">consent does not permit public use</span>'}</span>
+          <button class="ghost small" data-pub-rec="${pr.id}" data-next="${pr.publication_status === 'public' ? 'private' : 'public'}"
+            ${pr.consent_public || pr.publication_status === 'public' ? '' : 'disabled title="Assign public-use consent first"'}>
+            ${pr.publication_status === 'public' ? 'Public ✓ — make internal' : 'Internal — publish'}
+          </button>
+        </div>`).join('')}
+      </div>` : '<p class="form-hint">No current recordings — the entry cannot appear publicly yet.</p>'}
+    </div>` : ''}`;
+
+  $('#pub-entry-toggle')?.addEventListener('click', async () => {
+    try {
+      await api(`/entries/${entry.id}/publication`, {
+        method: 'PATCH',
+        body: { status: entry.publication.entry_status === 'public' ? 'private' : 'public' },
+      });
+      renderEntryDetail(entry.id);
+    } catch (err) { toast(err.message, true); }
+  });
+  document.querySelectorAll('[data-pub-rec]').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      try {
+        await api(`/audio/${btn.dataset.pubRec}/publication`, { method: 'PATCH', body: { status: btn.dataset.next } });
+        renderEntryDetail(entry.id);
+      } catch (err) { toast(err.message, true); }
+    }));
 
   // --- entry save/delete ---
   $('#entry-form').addEventListener('submit', async (e) => {
@@ -2445,9 +2487,11 @@ async function renderSpeakersLibrary() {
   let data;
   try { data = await api(`/speakers?corpus_id=${corpus.id}`); }
   catch (err) { $('#sp-list').innerHTML = `<div class="empty">${esc(err.message)}</div>`; return; }
+  const psAdmin = isActiveOrgAdmin();
   $('#sp-list').innerHTML = data.speakers.length ? `
     <div class="card"><div class="table-wrap"><table>
-      <thead><tr><th>Speaker</th><th>Account</th><th>Recordings</th><th>Last recording</th><th>Notes</th></tr></thead>
+      <thead><tr><th>Speaker</th><th>Account</th><th>Recordings</th><th>Last recording</th><th>Notes</th>
+        ${psAdmin ? '<th>Public attribution</th>' : ''}</tr></thead>
       <tbody>${data.speakers.map((s) => `
         <tr>
           <td><b>${esc(s.display_name)}</b></td>
@@ -2455,12 +2499,39 @@ async function renderSpeakersLibrary() {
           <td>${s.recording_count}</td>
           <td style="white-space:nowrap">${s.last_recording_at ? fmtDate(s.last_recording_at) : '—'}</td>
           <td style="color:var(--muted)">${esc(s.notes ?? '')}</td>
+          ${psAdmin ? `
+          <td style="white-space:nowrap">
+            <input type="text" data-sp-name="${s.id}" value="${esc(s.public_display_name ?? '')}"
+              placeholder="public name" style="width:9rem;font-size:0.85rem">
+            <label style="font-size:0.85rem;white-space:nowrap">
+              <input type="checkbox" data-sp-on="${s.id}" ${s.public_attribution_enabled ? 'checked' : ''}> shown</label>
+            <button class="ghost small" data-sp-save="${s.id}">Save</button>
+          </td>` : ''}
         </tr>`).join('')}
       </tbody></table></div></div>
+    ${psAdmin ? `<p style="color:var(--muted);font-size:0.9rem">Public attribution is deliberate
+      (never the internal name): a speaker appears on the public site only with the public
+      name entered here and “shown” checked — and only when the <a href="#/public-site">public
+      site</a> shows speaker names at all.</p>` : ''}
     <p style="color:var(--muted);font-size:0.9rem">Speakers are registered during recording
       sessions — a person can be recorded without an account, and linked to one later.</p>`
     : `<div class="empty">No speakers yet.<br><br>Speakers are registered when a recording
         session starts — <a href="#/record">start one</a>.</div>`;
+
+  document.querySelectorAll('[data-sp-save]').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.spSave;
+      try {
+        await api(`/speakers/${id}/public`, {
+          method: 'PATCH',
+          body: {
+            public_display_name: document.querySelector(`[data-sp-name="${id}"]`).value,
+            public_attribution_enabled: document.querySelector(`[data-sp-on="${id}"]`).checked,
+          },
+        });
+        toast('Public attribution saved');
+      } catch (err) { toast(err.message, true); }
+    }));
 }
 
 // ---------------------------------------------------------------------------
@@ -2932,6 +3003,107 @@ async function renderProjects() {
     if (action === 'consent') showConsentModal(pid);
     if (action === 'delete') showDeleteProjectModal(pid, btn.dataset.name);
   };
+}
+
+// ---------------------------------------------------------------------------
+// Public site (public-site spec §19–§21): the admin controls behind the
+// separate-domain public site. Publication is explicit — nothing goes public
+// because it merely has audio — and consent stays authoritative.
+// ---------------------------------------------------------------------------
+async function renderPublicSite() {
+  const org = activeOrg();
+  if (!org) { view.innerHTML = '<div class="empty">No organization.</div>'; return; }
+  view.innerHTML = '<div class="empty">Loading…</div>';
+  let data;
+  try { data = await api(`/orgs/${org.id}/public-site`); }
+  catch (err) { view.innerHTML = `<div class="empty">${esc(err.message)}</div>`; return; }
+  const s = data.settings ?? {};
+  const c = data.counts;
+  view.innerHTML = `
+    <div class="page-head"><h1>Public site</h1></div>
+    <p style="color:var(--muted);max-width:64ch;margin-top:-0.5rem">A public, read-only
+      website showing ONLY what you deliberately publish. An entry appears publicly only
+      when the entry is published <b>and</b> at least one current recording is published
+      <b>and</b> that recording's consent permits public presentation. Unpublishing takes
+      effect immediately.</p>
+
+    <div class="card">
+      <h2 style="margin-top:0">Site settings</h2>
+      <form id="ps-form">
+        <label class="field" style="max-width:320px"><span>
+          <input type="checkbox" name="enabled" ${s.enabled ? 'checked' : ''}> Public site enabled</span></label>
+        <div class="form-row">
+          <label class="field"><span>Site title</span>
+            <input type="text" name="site_title" value="${esc(s.site_title ?? '')}" placeholder="e.g. ${esc(org.name)}"></label>
+          <label class="field"><span>Public domain</span>
+            <input type="text" name="public_domain" value="${esc(s.public_domain ?? '')}" placeholder="e.g. denekede.ca"></label>
+        </div>
+        <label class="field"><span>Site description</span>
+          <input type="text" name="site_description" value="${esc(s.site_description ?? '')}" placeholder="Shown on the public home page and in search engines"></label>
+        <label class="field" style="max-width:420px"><span>
+          <input type="checkbox" name="show_speaker_names" ${s.show_speaker_names !== 0 ? 'checked' : ''}>
+          Show speaker names (only speakers with explicit public attribution — set per speaker on the
+          <a href="#/speakers">Speakers</a> page)</span></label>
+        <p class="error-msg" hidden></p>
+        <div class="form-actions"><button type="submit">Save settings</button></div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Publication</h2>
+      <div class="stat-tiles">
+        <div class="stat-tile"><div class="num">${c.total_entries}</div><div class="lbl">Entries total</div></div>
+        <div class="stat-tile"><div class="num">${c.with_current_recordings}</div><div class="lbl">With recordings</div></div>
+        <div class="stat-tile"><div class="num">${c.with_eligible_recordings}</div><div class="lbl">Consent-eligible</div></div>
+        <div class="stat-tile"><div class="num">${c.publicly_visible}</div><div class="lbl">Publicly visible now</div></div>
+      </div>
+      <p style="color:var(--muted);max-width:60ch">Bulk publication publishes every
+        eligible entry together with its consent-eligible current recordings. Recordings
+        whose consent is unknown or does not permit public use are never published
+        automatically. Individual entries are published from their entry page.</p>
+      <div class="rec-actions" style="justify-content:flex-start">
+        <button class="secondary" id="ps-preview">Preview eligible</button>
+        <button id="ps-publish" hidden>Publish eligible</button>
+      </div>
+      <div id="ps-bulk-result" style="margin-top:0.6rem"></div>
+    </div>`;
+
+  $('#ps-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    try {
+      await api(`/orgs/${org.id}/public-site`, {
+        method: 'PUT',
+        body: {
+          enabled: f.enabled.checked,
+          site_title: f.site_title.value,
+          site_description: f.site_description.value,
+          public_domain: f.public_domain.value,
+          show_speaker_names: f.show_speaker_names.checked,
+        },
+      });
+      toast('Public site settings saved');
+    } catch (err) { showFormError(f, err.message); }
+  });
+
+  $('#ps-preview').addEventListener('click', async () => {
+    try {
+      const r = await api(`/orgs/${org.id}/public-site/bulk-publish`, { method: 'POST', body: {} });
+      $('#ps-bulk-result').innerHTML = `
+        <p><b>${r.to_publish}</b> entr${r.to_publish === 1 ? 'y is' : 'ies are'} eligible and not yet published.</p>
+        ${r.to_publish ? '' : '<p class="home-empty">Nothing to publish — every eligible entry is already public.</p>'}`;
+      $('#ps-publish').hidden = r.to_publish === 0;
+    } catch (err) { toast(err.message, true); }
+  });
+
+  $('#ps-publish').addEventListener('click', async () => {
+    if (!confirm('Publish all eligible entries and their consent-eligible recordings to the public site?')) return;
+    try {
+      const r = await api(`/orgs/${org.id}/public-site/bulk-publish`, { method: 'POST', body: { apply: true } });
+      toast(`Published ${r.entries_published} entries and ${r.recordings_published} recordings`);
+      renderPublicSite();
+    } catch (err) { toast(err.message, true); }
+  });
 }
 
 // Consent controls for a project (#6): pick the default profile stamped onto new
@@ -3642,6 +3814,7 @@ function route() {
   else if ((m = hash.match(/^#\/compensation\/(\d+)$/)) && isOrgAdmin()) renderCompensationDetail(m[1]);
   else if (hash === '#/people' && isOrgAdmin()) renderOrganization();
   else if (hash === '#/consent' && isOrgAdmin()) renderConsent();
+  else if (hash === '#/public-site' && isActiveOrgAdmin()) renderPublicSite();
   else { location.hash = '#/home'; }
 }
 
