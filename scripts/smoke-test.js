@@ -19,7 +19,7 @@ function apiPath(path) {
   if (!path.startsWith('/api/')) return path;
   const rest = path.slice(4);
   const prefix =
-    !rest.includes('/consent-profiles') && PLATFORM_API.test(rest) ? '/api/platform' : '/api/language';
+    !rest.includes('/consent-profiles') && !rest.includes('/public-site') && PLATFORM_API.test(rest) ? '/api/platform' : '/api/language';
   return prefix + rest;
 }
 
@@ -2510,7 +2510,9 @@ if (BASE.includes('localhost')) {
 {
   const { default: db } = await import('../src/db.js');
   const ts = Date.now();
-  const pub = async (p, origin) => {
+  // Origin is pinned per call (default site A): dev databases may carry
+  // additional enabled sites, so tests never rely on single-site fallback.
+  const pub = async (p, origin = 'https://pub-a.example') => {
     const res = await fetch(`${BASE}/api/public/language${p}`, { headers: origin ? { Origin: origin } : {} });
     const ct = res.headers.get('content-type') || '';
     return { status: res.status, data: ct.includes('json') ? await res.json() : await res.text(), headers: res.headers };
@@ -2611,13 +2613,13 @@ if (BASE.includes('localhost')) {
     JSON.stringify(r.data.recordings?.map((x) => x.uid)));
 
   // §46 audio: streams, honors ranges, hides paths and original names.
-  let audioRes = await fetch(`${BASE}/api/public/language/recordings/${r1b.uid}/audio`);
+  let audioRes = await fetch(`${BASE}/api/public/language/recordings/${r1b.uid}/audio`, { headers: { Origin: 'https://pub-a.example' } });
   check('public: audio streams', audioRes.status === 200 &&
     /audio\//.test(audioRes.headers.get('content-type') ?? ''), audioRes.status);
   check('public: audio filename is the uid, never the original name',
     (audioRes.headers.get('content-disposition') ?? '').includes(r1b.uid));
   await audioRes.arrayBuffer();
-  audioRes = await fetch(`${BASE}/api/public/language/recordings/${r1b.uid}/audio`, { headers: { Range: 'bytes=0-99' } });
+  audioRes = await fetch(`${BASE}/api/public/language/recordings/${r1b.uid}/audio`, { headers: { Range: 'bytes=0-99', Origin: 'https://pub-a.example' } });
   check('public: range requests work', audioRes.status === 206 &&
     (await audioRes.arrayBuffer()).byteLength === 100, audioRes.status);
   check('public: private recording audio is 404', (await pub(`/recordings/${r4.uid}/audio`)).status === 404);
@@ -2693,12 +2695,92 @@ if (BASE.includes('localhost')) {
   r = await pub('/search?q=fish', 'https://pub-b.example');
   check('tenant: site B search never sees org A (its own semantic neighbours are fine)',
     r.data.results.every((x) => x.uid !== e1.uid), JSON.stringify(r.data.results?.map((x) => x.uid)));
-  check('tenant: with two sites, an unresolvable host/origin gets nothing',
-    (await pub('/entries')).status === 404);
+  check('tenant: an unresolvable host/origin gets nothing',
+    (await pub('/entries', null)).status === 404);
+
+
+  // --- publication management (phase C, spec §19–§20, §34) ---
+  r = await powner.req('PATCH', `/api/entries/${e2.id}/publication`, { status: 'public' });
+  check('pubadmin: entry publish route works and explains ineligibility',
+    r.status === 200 && r.data.publication_status === 'public' && r.data.reasons.includes('No recording'),
+    JSON.stringify(r.data));
+  r = await qowner.req('PATCH', `/api/entries/${e2.id}/publication`, { status: 'private' });
+  check('pubadmin: cross-org admin cannot touch publication', r.status === 403 || r.status === 404, r.status);
+  r = await powner.req('PATCH', `/api/audio/${r3.id}/publication`, { status: 'public' });
+  check('pubadmin: recording publish route works', r.status === 200, JSON.stringify(r.data));
+  r = await pub('/entries', 'https://pub-a.example');
+  check('pubadmin: route-published recording still gated by consent',
+    !r.data.entries.some((x) => x.uid === e3.uid));
+  r = await powner.req('GET', `/api/entries/${e1.id}`);
+  check('pubadmin: admin entry detail carries publication state',
+    r.data.publication?.entry_status === 'public' && Array.isArray(r.data.publication?.recordings),
+    JSON.stringify(r.data.publication ?? null));
+  r = await powner.req('PUT', `/api/orgs/${pOrg}/public-site`, { site_title: 'Renamed Site', enabled: true });
+  check('pubadmin: settings PUT upserts', r.status === 200 && r.data.settings.site_title === 'Renamed Site',
+    JSON.stringify(r.data));
+  r = await pub('/config', 'https://pub-a.example');
+  check('pubadmin: public config reflects settings immediately', r.data.site_title === 'Renamed Site');
+  const e8 = await mkEntry('golo', 'ptarmigan');
+  const r8 = await mkRec(e8.id);
+  db.prepare(`UPDATE audio_files SET allow_language_learning = 1 WHERE id = ?`).run(r8.id);
+  r = await powner.req('POST', `/api/orgs/${pOrg}/public-site/bulk-publish`, {});
+  check('pubadmin: bulk preview counts without applying',
+    r.data.applied === false && r.data.to_publish >= 1, JSON.stringify(r.data));
+  r = await powner.req('POST', `/api/orgs/${pOrg}/public-site/bulk-publish`, { apply: true });
+  check('pubadmin: bulk publish applies to eligible content',
+    r.data.applied === true && r.data.entries_published >= 1 && r.data.recordings_published >= 1,
+    JSON.stringify(r.data));
+  r = await pub('/entries', 'https://pub-a.example');
+  check('pubadmin: bulk-published entry is publicly visible', r.data.entries.some((x) => x.uid === e8.uid));
+  check('pubadmin: bulk never surfaces consent-ineligible entries',
+    !r.data.entries.some((x) => x.uid === e3.uid) && !r.data.entries.some((x) => x.uid === e6.uid));
+  r = await powner.req('PATCH', `/api/speakers/${spk}/public`, { public_display_name: 'J. Public', public_attribution_enabled: true });
+  check('pubadmin: speaker attribution route works',
+    r.status === 200 && r.data.public_display_name === 'J. Public', JSON.stringify(r.data));
+  {
+    const actions = db.prepare(`SELECT action FROM publication_events WHERE organization_id = ?`).all(pOrg)
+      .map((x) => x.action);
+    check('pubadmin: publication changes are audited',
+      actions.includes('entry.published') && actions.includes('recording.published') &&
+      actions.some((a) => a.startsWith('bulk_publish:')),
+      JSON.stringify(actions));
+  }
+
+
+  // --- public site serving + SEO (phase D, spec §24/§29) ---
+  // Host-routed via X-Forwarded-Host (trust proxy is on, as in production).
+  const site = async (sp, host) => {
+    const res = await fetch(`${BASE}${sp}`, { headers: { 'X-Forwarded-Host': host } });
+    return { status: res.status, text: await res.text() };
+  };
+  r = await site('/', 'pub-a.example');
+  check('site: home shell serves on the configured host with site meta',
+    r.status === 200 && r.text.includes('<title>Renamed Site</title>') && r.text.includes('rel="canonical"'),
+    r.status);
+  r = await site(`/entry/${e1.uid}`, 'pub-a.example');
+  check('site: public entry page carries entry meta and canonical uid URL',
+    r.status === 200 && r.text.includes('łue') && r.text.includes(`/entry/${e1.uid}`), r.status);
+  r = await site(`/entry/${e7.uid}`, 'pub-a.example');
+  check('site: private entry page is a 404 shell that leaks nothing',
+    r.status === 404 && !r.text.includes('zvqxk'), r.status);
+  r = await site('/sitemap.xml', 'pub-a.example');
+  check('site: sitemap lists only public uids of THIS site',
+    r.text.includes(e1.uid) && !r.text.includes(e7.uid) && !r.text.includes(eq.uid),
+    r.status);
+  r = await site('/robots.txt', 'pub-a.example');
+  check('site: robots.txt advertises the sitemap',
+    r.text.includes('Sitemap: https://pub-a.example/sitemap.xml'));
+  r = await site('/style.css', 'pub-a.example');
+  check('site: assets serve on the public host', r.status === 200, r.status);
+  {
+    const normal = await fetch(`${BASE}/`);
+    check('site: ordinary hosts still serve the app sign-in page',
+      (await normal.text()).includes('Sign in'));
+  }
 
   // cleanup
   db.prepare('DELETE FROM public_language_settings WHERE organization_id IN (?, ?)').run(pOrg, qOrg);
-  for (const e of [e1, e2, e3, e4, e6, e7]) await powner.req('DELETE', `/api/entries/${e.id}`);
+  for (const e of [e1, e2, e3, e4, e6, e7, e8]) await powner.req('DELETE', `/api/entries/${e.id}`);
   await qowner.req('DELETE', `/api/entries/${eq.id}`);
   r = await powner.req('DELETE', `/api/orgs/${pOrg}`);
   check('public: org A cleanup', r.status === 200, JSON.stringify(r.data));

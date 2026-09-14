@@ -17,6 +17,7 @@ import { DOCUMENTS_DIR } from './apps/language/documents/storage.js';
 import { selfSpeakerFor, orgOfProject } from './apps/language/speakers.js';
 import { organizationHasApp, entitledOrgIds } from './platform/entitlements.js';
 import { uuidv7 } from './platform/uid.js';
+import { ineligibilityReasons, PUBLIC_RECORDING } from './apps/language/public/eligibility.js';
 import { createRequire } from 'node:module';
 import { backfillEmbeddings } from '../scripts/embed-backfill.js';
 import { APP_URL, inviteEmail, requestFormEmail, requestNotifyEmail, resetEmail, sendMail } from './mail.js';
@@ -875,6 +876,183 @@ function visibleCorpusIds(user) {
 }
 
 // ---------------------------------------------------------------------------
+// Public-site publication management (public-site spec §19–§21, §34): the
+// authenticated controls behind the public Language site. Publishing is an
+// explicit, audited, admin-only act; consent stays authoritative (a
+// published recording without public-presentation consent never appears).
+// ---------------------------------------------------------------------------
+
+const logPublication = (orgId, type, id, action, userId) =>
+  db.prepare(
+    `INSERT INTO publication_events (organization_id, subject_type, subject_id, action, actor_user_id)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run(orgId ?? null, type, id ?? null, action, userId);
+
+function requireOrgAdminParam(req, res) {
+  const orgId = Number(req.params.id);
+  const role = orgRole(req.user, orgId);
+  if (!['owner_admin', 'admin'].includes(role ?? '')) {
+    bad(res, 'Organization admin access required', 403);
+    return null;
+  }
+  if (!requireLanguageForOrg(res, orgId)) return null;
+  return orgId;
+}
+
+/** Bulk-eligibility counts for an org's default collection (spec §20). */
+function publicationCounts(corpusId) {
+  const one = (sql, ...p) => db.prepare(sql).get(corpusId, ...p).n;
+  return {
+    total_entries: one(`SELECT COUNT(*) n FROM entries e WHERE e.corpus_id = ?`),
+    with_current_recordings: one(
+      `SELECT COUNT(*) n FROM entries e WHERE e.corpus_id = ?
+       AND EXISTS (SELECT 1 FROM audio_files a WHERE a.entry_id = e.id AND a.is_current = 1)`),
+    with_eligible_recordings: one(
+      `SELECT COUNT(*) n FROM entries e WHERE e.corpus_id = ?
+       AND EXISTS (SELECT 1 FROM audio_files a WHERE a.entry_id = e.id AND a.is_current = 1
+                   AND a.revoked_at IS NULL AND a.allow_language_learning = 1)`),
+    publicly_visible: one(
+      `SELECT COUNT(*) n FROM entries e WHERE e.corpus_id = ?
+       AND e.publication_status = 'public'
+       AND EXISTS (SELECT 1 FROM audio_files a WHERE a.entry_id = e.id AND ${PUBLIC_RECORDING})`),
+    published_entries: one(
+      `SELECT COUNT(*) n FROM entries e WHERE e.corpus_id = ? AND e.publication_status = 'public'`),
+  };
+}
+
+language.get('/orgs/:id/public-site', (req, res) => {
+  const orgId = requireOrgAdminParam(req, res);
+  if (!orgId) return;
+  const settings = db.prepare('SELECT * FROM public_language_settings WHERE organization_id = ?').get(orgId) ?? null;
+  const corpusId = defaultCorpusFor(db, orgId).id;
+  res.json({ settings, counts: publicationCounts(corpusId) });
+});
+
+language.put('/orgs/:id/public-site', (req, res) => {
+  const orgId = requireOrgAdminParam(req, res);
+  if (!orgId) return;
+  const b = req.body ?? {};
+  const domain = b.public_domain !== undefined
+    ? (String(b.public_domain).trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '') || null)
+    : undefined;
+  const prev = db.prepare('SELECT * FROM public_language_settings WHERE organization_id = ?').get(orgId);
+  try {
+    db.prepare(
+      `INSERT INTO public_language_settings (organization_id, enabled, site_title, site_description,
+         public_domain, show_speaker_names, allow_downloads)
+       VALUES (@org, @enabled, @title, @desc, @domain, @speakers, @downloads)
+       ON CONFLICT(organization_id) DO UPDATE SET
+         enabled = excluded.enabled, site_title = excluded.site_title,
+         site_description = excluded.site_description, public_domain = excluded.public_domain,
+         show_speaker_names = excluded.show_speaker_names, allow_downloads = excluded.allow_downloads,
+         updated_at = datetime('now')`
+    ).run({
+      org: orgId,
+      enabled: b.enabled !== undefined ? (b.enabled ? 1 : 0) : (prev?.enabled ?? 0),
+      title: b.site_title !== undefined ? (String(b.site_title).trim() || null) : (prev?.site_title ?? null),
+      desc: b.site_description !== undefined ? (String(b.site_description).trim() || null) : (prev?.site_description ?? null),
+      domain: domain !== undefined ? domain : (prev?.public_domain ?? null),
+      speakers: b.show_speaker_names !== undefined ? (b.show_speaker_names ? 1 : 0) : (prev?.show_speaker_names ?? 1),
+      downloads: b.allow_downloads !== undefined ? (b.allow_downloads ? 1 : 0) : (prev?.allow_downloads ?? 0),
+    });
+  } catch (e) {
+    if (String(e.message).includes('UNIQUE')) return bad(res, 'Another organization already uses that public domain');
+    throw e;
+  }
+  const now = db.prepare('SELECT * FROM public_language_settings WHERE organization_id = ?').get(orgId);
+  if ((prev?.enabled ?? 0) !== now.enabled) {
+    logPublication(orgId, 'site', orgId, now.enabled ? 'public_site.enabled' : 'public_site.disabled', req.user.id);
+  }
+  res.json({ settings: now });
+});
+
+// Bulk publication (spec §20): preview first, then an explicit apply.
+// Publishes eligible entries AND their consent-eligible current recordings —
+// never a recording whose consent does not clearly permit public use.
+language.post('/orgs/:id/public-site/bulk-publish', (req, res) => {
+  const orgId = requireOrgAdminParam(req, res);
+  if (!orgId) return;
+  const corpusId = defaultCorpusFor(db, orgId).id;
+  const apply = req.body?.apply === true;
+  const eligibleWhere = `e.corpus_id = ?
+    AND EXISTS (SELECT 1 FROM audio_files a WHERE a.entry_id = e.id AND a.is_current = 1
+                AND a.revoked_at IS NULL AND a.allow_language_learning = 1)`;
+  const toPublish = db.prepare(
+    `SELECT COUNT(*) n FROM entries e WHERE ${eligibleWhere} AND e.publication_status = 'private'`
+  ).get(corpusId).n;
+  if (!apply) {
+    return res.json({ counts: publicationCounts(corpusId), to_publish: toPublish, applied: false });
+  }
+  let entriesPublished = 0;
+  let recordingsPublished = 0;
+  db.transaction(() => {
+    recordingsPublished = db.prepare(
+      `UPDATE audio_files SET publication_status = 'public'
+       WHERE publication_status = 'private' AND is_current = 1
+         AND revoked_at IS NULL AND allow_language_learning = 1
+         AND entry_id IN (SELECT e.id FROM entries e WHERE ${eligibleWhere})`
+    ).run(corpusId).changes;
+    entriesPublished = db.prepare(
+      `UPDATE entries SET publication_status = 'public'
+       WHERE publication_status = 'private' AND id IN
+         (SELECT e.id FROM entries e WHERE ${eligibleWhere})`
+    ).run(corpusId).changes;
+    logPublication(orgId, 'site', orgId, `bulk_publish:${entriesPublished}e/${recordingsPublished}r`, req.user.id);
+  })();
+  res.json({
+    applied: true,
+    entries_published: entriesPublished,
+    recordings_published: recordingsPublished,
+    counts: publicationCounts(corpusId),
+  });
+});
+
+// Per-entry and per-recording publication (spec §19). Admin-only; changes
+// affect the public API on the next request.
+language.patch('/entries/:id/publication', loadEntry, (req, res) => {
+  if (req.projectRole !== 'admin') return bad(res, 'Admin access required', 403);
+  const status = req.body?.status === 'public' ? 'public' : 'private';
+  db.prepare(`UPDATE entries SET publication_status = ? WHERE id = ?`).run(status, req.entry.id);
+  logPublication(orgOfEntry(req.entry), 'entry', req.entry.id,
+    status === 'public' ? 'entry.published' : 'entry.unpublished', req.user.id);
+  const entry = db.prepare('SELECT * FROM entries WHERE id = ?').get(req.entry.id);
+  res.json({ ok: true, publication_status: status, reasons: ineligibilityReasons(entry) });
+});
+
+language.patch('/audio/:id/publication', loadAudio, (req, res) => {
+  if (req.audioRole !== 'admin') return bad(res, 'Admin access required', 403);
+  const status = req.body?.status === 'public' ? 'public' : 'private';
+  db.prepare(`UPDATE audio_files SET publication_status = ? WHERE id = ?`).run(status, req.audio.id);
+  const entry = db.prepare('SELECT * FROM entries WHERE id = ?').get(req.audio.entry_id);
+  logPublication(orgOfEntry(entry), 'recording', req.audio.id,
+    status === 'public' ? 'recording.published' : 'recording.unpublished', req.user.id);
+  res.json({ ok: true, publication_status: status });
+});
+
+// Deliberate public speaker attribution (spec §6): admins of the speaker's
+// organization opt a speaker in with an explicit public display name.
+language.patch('/speakers/:id/public', (req, res) => {
+  const speaker = db.prepare('SELECT * FROM speakers WHERE id = ?').get(Number(req.params.id));
+  if (!speaker) return bad(res, 'Speaker not found', 404);
+  const role = orgRole(req.user, speaker.organization_id);
+  if (!['owner_admin', 'admin'].includes(role ?? '')) return bad(res, 'Organization admin access required', 403);
+  if (!requireLanguageForOrg(res, speaker.organization_id)) return;
+  const b = req.body ?? {};
+  db.prepare(
+    `UPDATE speakers SET
+       public_display_name = ?,
+       public_attribution_enabled = ?,
+       updated_at = datetime('now')
+     WHERE id = ?`
+  ).run(
+    b.public_display_name !== undefined ? (String(b.public_display_name).trim() || null) : speaker.public_display_name,
+    b.public_attribution_enabled !== undefined ? (b.public_attribution_enabled ? 1 : 0) : speaker.public_attribution_enabled,
+    speaker.id
+  );
+  res.json(db.prepare('SELECT id, public_display_name, public_attribution_enabled FROM speakers WHERE id = ?').get(speaker.id));
+});
+
+// ---------------------------------------------------------------------------
 // Master search + Home feed (master-search spec): users search the active
 // Collection, not tables. Authorization resolves corpus -> org -> entitlement
 // -> membership BEFORE any retrieval (visibleCorpusIds covers all three), and
@@ -952,6 +1130,7 @@ language.get('/speakers', (req, res) => {
   const speakers = db
     .prepare(
       `SELECT s.id, s.uid, s.display_name, s.user_id, s.notes, u.name AS user_name,
+              s.public_display_name, s.public_attribution_enabled,
               (SELECT COUNT(*) FROM audio_files a WHERE a.speaker_id = s.id AND a.is_current = 1) AS recording_count,
               (SELECT MAX(a.created_at) FROM audio_files a WHERE a.speaker_id = s.id) AS last_recording_at
        FROM speakers s LEFT JOIN users u ON u.id = s.user_id
@@ -1984,7 +2163,23 @@ language.get('/entries/:id', loadEntry, (req, res) => {
     )
     .all(req.entry.id)
     .map((s) => ({ ...s, location: s.location_json ? JSON.parse(s.location_json) : null }));
-  res.json({ ...req.entry, audio, sources, can_edit: canEditEntry(req), role: req.projectRole });
+  // Admins also see the public-site publication state (spec §19) with
+  // plain-language eligibility reasons — UI hiding is not authorization.
+  let publication;
+  if (req.projectRole === 'admin') {
+    const raw = db.prepare('SELECT * FROM entries WHERE id = ?').get(req.entry.id);
+    publication = {
+      entry_status: raw.publication_status,
+      reasons: ineligibilityReasons(raw),
+      recordings: db.prepare(
+        `SELECT a.id, a.uid, a.language, a.publication_status,
+                (a.revoked_at IS NULL AND a.allow_language_learning = 1) AS consent_public
+         FROM audio_files a WHERE a.entry_id = ? AND a.is_current = 1 ORDER BY a.created_at`
+      ).all(req.entry.id),
+    };
+  }
+  res.json({ ...req.entry, audio, sources, can_edit: canEditEntry(req), role: req.projectRole,
+    ...(publication ? { publication } : {}) });
 });
 
 language.patch('/entries/:id', loadEntry, (req, res) => {

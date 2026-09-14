@@ -5,6 +5,7 @@ import path from 'node:path';
 import db from './src/db.js';
 import { platform, language } from './src/api.js';
 import { publicLanguage } from './src/apps/language/public/api.js';
+import { publicSiteHandler } from './src/apps/language/public/site.js';
 import { COOKIE_NAME, userForToken } from './src/auth.js';
 import { APP_URL } from './src/mail.js';
 import { backfillEmbeddings } from './scripts/embed-backfill.js';
@@ -48,6 +49,11 @@ app.use((req, res, next) => {
 app.use('/api/platform', platform);
 app.use('/api/language', language);
 app.use('/api/public/language', publicLanguage);
+
+// The public Language site, served on its configured domain(s) — e.g.
+// denekede.ca (public-site spec phase D/E). Requests on those hosts get the
+// public shell/assets/sitemap; every other host falls through untouched.
+app.use(publicSiteHandler);
 
 // Product root: THE sign-in page lives here. A signed-in visitor is forwarded
 // to their app (Language — the only one today; a last-used-app preference can

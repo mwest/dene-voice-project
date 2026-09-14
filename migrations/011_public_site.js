@@ -46,7 +46,7 @@ export function up(db) {
       subject_type     TEXT NOT NULL CHECK (subject_type IN ('entry', 'recording', 'site')),
       subject_id       INTEGER,
       action           TEXT NOT NULL,
-      actor_user_id    INTEGER REFERENCES users(id),
+      actor_user_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
       created_at       TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
