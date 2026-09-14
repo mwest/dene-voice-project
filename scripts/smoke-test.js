@@ -2510,7 +2510,9 @@ if (BASE.includes('localhost')) {
 {
   const { default: db } = await import('../src/db.js');
   const ts = Date.now();
-  const pub = async (p, origin) => {
+  // Origin is pinned per call (default site A): dev databases may carry
+  // additional enabled sites, so tests never rely on single-site fallback.
+  const pub = async (p, origin = 'https://pub-a.example') => {
     const res = await fetch(`${BASE}/api/public/language${p}`, { headers: origin ? { Origin: origin } : {} });
     const ct = res.headers.get('content-type') || '';
     return { status: res.status, data: ct.includes('json') ? await res.json() : await res.text(), headers: res.headers };
@@ -2611,13 +2613,13 @@ if (BASE.includes('localhost')) {
     JSON.stringify(r.data.recordings?.map((x) => x.uid)));
 
   // §46 audio: streams, honors ranges, hides paths and original names.
-  let audioRes = await fetch(`${BASE}/api/public/language/recordings/${r1b.uid}/audio`);
+  let audioRes = await fetch(`${BASE}/api/public/language/recordings/${r1b.uid}/audio`, { headers: { Origin: 'https://pub-a.example' } });
   check('public: audio streams', audioRes.status === 200 &&
     /audio\//.test(audioRes.headers.get('content-type') ?? ''), audioRes.status);
   check('public: audio filename is the uid, never the original name',
     (audioRes.headers.get('content-disposition') ?? '').includes(r1b.uid));
   await audioRes.arrayBuffer();
-  audioRes = await fetch(`${BASE}/api/public/language/recordings/${r1b.uid}/audio`, { headers: { Range: 'bytes=0-99' } });
+  audioRes = await fetch(`${BASE}/api/public/language/recordings/${r1b.uid}/audio`, { headers: { Range: 'bytes=0-99', Origin: 'https://pub-a.example' } });
   check('public: range requests work', audioRes.status === 206 &&
     (await audioRes.arrayBuffer()).byteLength === 100, audioRes.status);
   check('public: private recording audio is 404', (await pub(`/recordings/${r4.uid}/audio`)).status === 404);
@@ -2693,8 +2695,8 @@ if (BASE.includes('localhost')) {
   r = await pub('/search?q=fish', 'https://pub-b.example');
   check('tenant: site B search never sees org A (its own semantic neighbours are fine)',
     r.data.results.every((x) => x.uid !== e1.uid), JSON.stringify(r.data.results?.map((x) => x.uid)));
-  check('tenant: with two sites, an unresolvable host/origin gets nothing',
-    (await pub('/entries')).status === 404);
+  check('tenant: an unresolvable host/origin gets nothing',
+    (await pub('/entries', null)).status === 404);
 
 
   // --- publication management (phase C, spec §19–§20, §34) ---
@@ -2742,6 +2744,38 @@ if (BASE.includes('localhost')) {
       actions.includes('entry.published') && actions.includes('recording.published') &&
       actions.some((a) => a.startsWith('bulk_publish:')),
       JSON.stringify(actions));
+  }
+
+
+  // --- public site serving + SEO (phase D, spec §24/§29) ---
+  // Host-routed via X-Forwarded-Host (trust proxy is on, as in production).
+  const site = async (sp, host) => {
+    const res = await fetch(`${BASE}${sp}`, { headers: { 'X-Forwarded-Host': host } });
+    return { status: res.status, text: await res.text() };
+  };
+  r = await site('/', 'pub-a.example');
+  check('site: home shell serves on the configured host with site meta',
+    r.status === 200 && r.text.includes('<title>Renamed Site</title>') && r.text.includes('rel="canonical"'),
+    r.status);
+  r = await site(`/entry/${e1.uid}`, 'pub-a.example');
+  check('site: public entry page carries entry meta and canonical uid URL',
+    r.status === 200 && r.text.includes('łue') && r.text.includes(`/entry/${e1.uid}`), r.status);
+  r = await site(`/entry/${e7.uid}`, 'pub-a.example');
+  check('site: private entry page is a 404 shell that leaks nothing',
+    r.status === 404 && !r.text.includes('zvqxk'), r.status);
+  r = await site('/sitemap.xml', 'pub-a.example');
+  check('site: sitemap lists only public uids of THIS site',
+    r.text.includes(e1.uid) && !r.text.includes(e7.uid) && !r.text.includes(eq.uid),
+    r.status);
+  r = await site('/robots.txt', 'pub-a.example');
+  check('site: robots.txt advertises the sitemap',
+    r.text.includes('Sitemap: https://pub-a.example/sitemap.xml'));
+  r = await site('/style.css', 'pub-a.example');
+  check('site: assets serve on the public host', r.status === 200, r.status);
+  {
+    const normal = await fetch(`${BASE}/`);
+    check('site: ordinary hosts still serve the app sign-in page',
+      (await normal.text()).includes('Sign in'));
   }
 
   // cleanup
