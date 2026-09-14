@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import db from './src/db.js';
 import { platform, language } from './src/api.js';
+import { publicLanguage } from './src/apps/language/public/api.js';
 import { COOKIE_NAME, userForToken } from './src/auth.js';
 import { APP_URL } from './src/mail.js';
 import { backfillEmbeddings } from './scripts/embed-backfill.js';
@@ -41,9 +42,12 @@ app.use((req, res, next) => {
   next();
 });
 
-// APIs: Indigenous.ai platform (identity/tenancy) vs the Language application.
+// APIs: platform (identity/tenancy) vs the Language application, plus the
+// unauthenticated read-only public namespace (public-site spec §8) — a
+// durable external boundary that never touches sessions or cookies.
 app.use('/api/platform', platform);
 app.use('/api/language', language);
+app.use('/api/public/language', publicLanguage);
 
 // Product root: THE sign-in page lives here. A signed-in visitor is forwarded
 // to their app (Language — the only one today; a last-used-app preference can
