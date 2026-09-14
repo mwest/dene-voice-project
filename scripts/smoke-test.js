@@ -2504,6 +2504,210 @@ if (BASE.includes('localhost')) {
   check('zc: cleanup complete', r.status === 200, JSON.stringify(r.data));
 }
 
+// --- public language site API (public-site spec §42–§46, §18) ---
+// All public calls use bare fetch with NO cookies — the public surface must
+// work in a clean browser with no session (spec §14).
+{
+  const { default: db } = await import('../src/db.js');
+  const ts = Date.now();
+  const pub = async (p, origin) => {
+    const res = await fetch(`${BASE}/api/public/language${p}`, { headers: origin ? { Origin: origin } : {} });
+    const ct = res.headers.get('content-type') || '';
+    return { status: res.status, data: ct.includes('json') ? await res.json() : await res.text(), headers: res.headers };
+  };
+  const publishEntry = (id, on = true) =>
+    db.prepare(`UPDATE entries SET publication_status = ? WHERE id = ?`).run(on ? 'public' : 'private', id);
+  const publishRec = (id, on = true, consent = true) =>
+    db.prepare(`UPDATE audio_files SET publication_status = ?, allow_language_learning = ? WHERE id = ?`)
+      .run(on ? 'public' : 'private', consent ? 1 : 0, id);
+
+  // Site P: a fresh org with its own default collection and an owner account.
+  const pEmail = `pubowner-${ts}@test.ca`;
+  r = await sa.req('POST', '/api/users', { email: pEmail, name: 'Pub Owner', password: 'pubowner-pass-1' });
+  const pOwnerId = r.data.user_id ?? r.data.id;
+  r = await sa.req('POST', '/api/orgs', { name: `PubOrg ${ts}`, owner_email: pEmail });
+  const pOrg = r.data.id;
+  const powner = client();
+  await powner.req('POST', '/api/login', { email: pEmail, password: 'pubowner-pass-1' });
+  db.prepare(`INSERT INTO public_language_settings (organization_id, enabled, site_title, public_domain)
+              VALUES (?, 1, 'Test Public Site', 'pub-a.example')`).run(pOrg);
+
+  const mkEntry = async (dene, english, kind = 'word') => {
+    const rr = await powner.req('POST', '/api/entries', { kind, dene_text: dene, english_text: english });
+    return rr.data;
+  };
+  const mkRec = async (entryId, seconds = 1) => {
+    const fd = new FormData();
+    fd.append('file', new Blob([makeWav(seconds)], { type: 'audio/wav' }), `p${Date.now()}.wav`);
+    fd.append('language', 'dene');
+    const rr = await powner.req('POST', `/api/entries/${entryId}/audio`, fd, true);
+    return rr.data;
+  };
+
+  const e1 = await mkEntry('łue', 'fish');
+  const r1 = await mkRec(e1.id);
+  const e2 = await mkEntry('tu', 'water');                    // public, no recording
+  const e3 = await mkEntry('kǫ́', 'fire');                     // public, private recording
+  const r3 = await mkRec(e3.id);
+  const e4 = await mkEntry('sas', 'bear');                    // private, public recording
+  const r4 = await mkRec(e4.id);
+  const e6 = await mkEntry('dech', 'stick');                  // public, published, NO consent
+  const r6 = await mkRec(e6.id);
+  const e7 = await mkEntry('nombre', 'zvqxk unique private phrase'); // stays private (search privacy)
+  publishEntry(e1.id); publishRec(r1.id);
+  publishEntry(e2.id);
+  publishEntry(e3.id); // r3 stays private
+  publishRec(r4.id);   // e4 stays private
+  publishEntry(e6.id); publishRec(r6.id, true, false); // published but consent says no
+
+  // §45 CORS + config, no session anywhere.
+  r = await pub('/config', 'https://pub-a.example');
+  check('public: config serves site meta with zero auth',
+    r.status === 200 && r.data.site_title === 'Test Public Site', JSON.stringify(r.data));
+  check('public: allowed origin gets exact CORS grant, credentials never',
+    r.headers.get('access-control-allow-origin') === 'https://pub-a.example' &&
+    r.headers.get('access-control-allow-credentials') === null);
+  r = await pub('/config', 'https://evil.example');
+  check('public: unknown origin gets NO CORS grant', r.headers.get('access-control-allow-origin') === null);
+
+  // §42 publication matrix.
+  r = await pub('/entries');
+  const uids = r.data.entries.map((x) => x.uid);
+  check('public: published entry with published+consented recording is listed',
+    uids.includes(e1.uid), JSON.stringify(uids));
+  check('public: entry with no recording is absent', !uids.includes(e2.uid));
+  check('public: entry with only private recordings is absent', !uids.includes(e3.uid));
+  check('public: private entry is absent despite public recording', !uids.includes(e4.uid));
+  check('public: published-but-unconsented recording never carries an entry', !uids.includes(e6.uid));
+  check('public: private totals are not revealed', r.data.total === 1, r.data.total);
+  check('public: list rows carry only approved fields',
+    Object.keys(r.data.entries[0]).sort().join(',') === 'category,dene_text,english_text,kind,recording_count,uid',
+    Object.keys(r.data.entries[0]).join(','));
+
+  r = await pub(`/entries/${e1.uid}`);
+  check('public: entry detail loads with its recording',
+    r.status === 200 && r.data.recordings.length === 1 && r.data.recordings[0].uid === r1.uid,
+    JSON.stringify(r.data.recordings));
+  check('public: detail exposes no internal fields',
+    !('project_id' in r.data) && !('notes' in r.data) && !('source_doc' in r.data) &&
+    !('created_by' in r.data) && !('id' in r.data));
+  check('public: speaker attribution is off by default', r.data.recordings[0].speaker === null,
+    JSON.stringify(r.data.recordings[0].speaker));
+  r = await pub(`/entries/${e4.uid}`);
+  check('public: private entry detail is a plain 404', r.status === 404 && !JSON.stringify(r.data).includes('sas'));
+
+  // Mixed recordings: only eligible ones returned.
+  const r1b = await mkRec(e1.id); // second CURRENT? same owner+language supersedes r1!
+  // Superseding replaced r1 — re-publish the new current version and verify
+  // the superseded one is gone from public view (spec §42 superseded).
+  r = await pub(`/entries/${e1.uid}`);
+  check('public: superseded recording vanishes even while published',
+    r.status === 404 || r.data.recordings?.every((x) => x.uid !== r1.uid), r.status);
+  publishRec(r1b.id);
+  r = await pub(`/entries/${e1.uid}`);
+  check('public: current published recording serves; superseded uid stays 404',
+    r.status === 200 && r.data.recordings.length === 1 && r.data.recordings[0].uid === r1b.uid &&
+    (await pub(`/recordings/${r1.uid}/audio`)).status === 404,
+    JSON.stringify(r.data.recordings?.map((x) => x.uid)));
+
+  // §46 audio: streams, honors ranges, hides paths and original names.
+  let audioRes = await fetch(`${BASE}/api/public/language/recordings/${r1b.uid}/audio`);
+  check('public: audio streams', audioRes.status === 200 &&
+    /audio\//.test(audioRes.headers.get('content-type') ?? ''), audioRes.status);
+  check('public: audio filename is the uid, never the original name',
+    (audioRes.headers.get('content-disposition') ?? '').includes(r1b.uid));
+  await audioRes.arrayBuffer();
+  audioRes = await fetch(`${BASE}/api/public/language/recordings/${r1b.uid}/audio`, { headers: { Range: 'bytes=0-99' } });
+  check('public: range requests work', audioRes.status === 206 &&
+    (await audioRes.arrayBuffer()).byteLength === 100, audioRes.status);
+  check('public: private recording audio is 404', (await pub(`/recordings/${r4.uid}/audio`)).status === 404);
+  check('public: revoked-consent recording audio is 404', (await pub(`/recordings/${r6.uid}/audio`)).status === 404);
+
+  // §18 search privacy: the private phrase must not exist publicly, exactly
+  // or semantically — the candidate set itself is public-only.
+  for (let i = 0; i < 120; i++) { // wait for the private entry's embedding
+    if (db.prepare('SELECT embedding FROM entries WHERE id = ?').get(e7.id)?.embedding) break;
+    await new Promise((res) => setTimeout(res, 500));
+  }
+  r = await pub(`/search?q=${encodeURIComponent('zvqxk unique private phrase')}`);
+  check('public: exact private phrase returns nothing — no snippet, no count',
+    r.status === 200 && r.data.results.length === 0 &&
+    !JSON.stringify(r.data.results).includes('zvqxk') && !('total' in r.data),
+    JSON.stringify(r.data));
+  r = await pub('/search?q=fish');
+  check('public: search finds public content', r.data.results[0]?.uid === e1.uid,
+    JSON.stringify(r.data.results));
+
+  // §43 revocation is immediate; republication too.
+  publishRec(r1b.id, false);
+  r = await pub('/entries');
+  check('public: unpublishing the only recording removes the entry at once',
+    !r.data.entries.some((x) => x.uid === e1.uid));
+  check('public: unpublished audio is 404 at once', (await pub(`/recordings/${r1b.uid}/audio`)).status === 404);
+  check('public: search stops returning it', (await pub('/search?q=fish')).data.results.length === 0);
+  publishRec(r1b.id);
+  r = await pub('/entries');
+  check('public: republishing restores it', r.data.entries.some((x) => x.uid === e1.uid));
+
+  // §6 deliberate speaker attribution.
+  const spk = db.prepare('SELECT speaker_id FROM audio_files WHERE id = ?').get(r1b.id).speaker_id;
+  db.prepare(`UPDATE speakers SET public_display_name = 'Jane M.', public_attribution_enabled = 1 WHERE id = ?`).run(spk);
+  r = await pub(`/entries/${e1.uid}`);
+  check('public: explicit attribution shows the public display name',
+    r.data.recordings[0].speaker === 'Jane M.', JSON.stringify(r.data.recordings[0]));
+  db.prepare(`UPDATE public_language_settings SET show_speaker_names = 0 WHERE organization_id = ?`).run(pOrg);
+  r = await pub(`/entries/${e1.uid}`);
+  check('public: site-level speaker hiding wins', r.data.recordings[0].speaker === null);
+  db.prepare(`UPDATE public_language_settings SET show_speaker_names = 1 WHERE organization_id = ?`).run(pOrg);
+
+  // §44 tenant isolation: a second enabled site must split the world by
+  // exact host/origin; UIDs never cross.
+  const qEmail = `pubq-${ts}@test.ca`;
+  r = await sa.req('POST', '/api/users', { email: qEmail, name: 'Pub Q', password: 'pubq-pass-1' });
+  const qOwnerId = r.data.user_id ?? r.data.id;
+  r = await sa.req('POST', '/api/orgs', { name: `PubOrgQ ${ts}`, owner_email: qEmail });
+  const qOrg = r.data.id;
+  const qowner = client();
+  await qowner.req('POST', '/api/login', { email: qEmail, password: 'pubq-pass-1' });
+  r = await qowner.req('POST', '/api/entries', { kind: 'word', dene_text: 'ejëre', english_text: 'moose' });
+  const eq = r.data;
+  const fdq = new FormData();
+  fdq.append('file', new Blob([makeWav(1)], { type: 'audio/wav' }), 'q.wav');
+  fdq.append('language', 'dene');
+  r = await qowner.req('POST', `/api/entries/${eq.id}/audio`, fdq, true);
+  const rq = r.data;
+  publishEntry(eq.id); publishRec(rq.id);
+  db.prepare(`INSERT INTO public_language_settings (organization_id, enabled, site_title, public_domain)
+              VALUES (?, 1, 'Site Q', 'pub-b.example')`).run(qOrg);
+
+  r = await pub('/entries', 'https://pub-a.example');
+  check('tenant: site A lists only org A content',
+    r.data.entries.some((x) => x.uid === e1.uid) && !r.data.entries.some((x) => x.uid === eq.uid),
+    JSON.stringify(r.data.entries?.map((x) => x.uid)));
+  r = await pub('/entries', 'https://pub-b.example');
+  check('tenant: site B lists only org B content',
+    r.data.entries.length === 1 && r.data.entries[0].uid === eq.uid);
+  check('tenant: guessing org B uids through site A is 404',
+    (await pub(`/entries/${eq.uid}`, 'https://pub-a.example')).status === 404 &&
+    (await pub(`/recordings/${rq.uid}/audio`, 'https://pub-a.example')).status === 404);
+  r = await pub('/search?q=fish', 'https://pub-b.example');
+  check('tenant: site B search never sees org A (its own semantic neighbours are fine)',
+    r.data.results.every((x) => x.uid !== e1.uid), JSON.stringify(r.data.results?.map((x) => x.uid)));
+  check('tenant: with two sites, an unresolvable host/origin gets nothing',
+    (await pub('/entries')).status === 404);
+
+  // cleanup
+  db.prepare('DELETE FROM public_language_settings WHERE organization_id IN (?, ?)').run(pOrg, qOrg);
+  for (const e of [e1, e2, e3, e4, e6, e7]) await powner.req('DELETE', `/api/entries/${e.id}`);
+  await qowner.req('DELETE', `/api/entries/${eq.id}`);
+  r = await powner.req('DELETE', `/api/orgs/${pOrg}`);
+  check('public: org A cleanup', r.status === 200, JSON.stringify(r.data));
+  await qowner.req('DELETE', `/api/orgs/${qOrg}`);
+  await sa.req('DELETE', `/api/users/${pOwnerId}`);
+  r = await sa.req('DELETE', `/api/users/${qOwnerId}`);
+  check('public: cleanup complete', r.status === 200, JSON.stringify(r.data));
+}
+
 // --- root sign-in page ---
 {
   const anon = client();

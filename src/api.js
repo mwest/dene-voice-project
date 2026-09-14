@@ -50,9 +50,10 @@ const pkg = cjsRequire('../package.json');
 const bad = (res, msg, code = 400) => res.status(code).json({ error: msg });
 
 // Light in-memory rate limit; protects the public, unauthenticated endpoints
-// (login brute force, and the email-sending request/reset flows).
+// (login brute force, the email-sending request/reset flows, and the public
+// Language site API, which imports it).
 const rateBuckets = new Map();
-function rateLimited(key, max, windowMs) {
+export function rateLimited(key, max, windowMs) {
   const now = Date.now();
   const hits = (rateBuckets.get(key) ?? []).filter((t) => now - t < windowMs);
   if (hits.length >= max) { rateBuckets.set(key, hits); return true; }
