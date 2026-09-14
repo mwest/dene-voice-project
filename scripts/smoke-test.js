@@ -2403,12 +2403,32 @@ if (BASE.includes('localhost')) {
   check('flat: campaign-less entry readable with null campaign provenance',
     r.status === 200 && r.data.project_name === null && r.data.can_edit === true,
     JSON.stringify({ p: r.data.project_name, e: r.data.can_edit }));
+  // Regression: a campaign recording SESSION works the whole collection —
+  // submitting a claimed campaign-less entry with the session id used to fail
+  // with "Recording session not found for this project".
+  r = await owner.req('POST', `/api/projects/${camp1.id}/recording-sessions`, {});
+  check('flat: recording session starts on the campaign', r.status === 201, JSON.stringify(r.data));
+  const sessId = r.data.id;
+  r = await owner.req('POST', `/api/projects/${camp1.id}/work/claim`, { type: 'recording', language: 'dene', limit: 20 });
+  const sessWi = r.data.items?.find((i) => i.entry.id === freeEntry);
+  check('flat: campaign claim offers the campaign-less entry', !!sessWi,
+    JSON.stringify(r.data.items?.map((i) => i.entry?.id) ?? r.data));
+  const wfd = new FormData();
+  wfd.append('file', new Blob([makeWav(1)], { type: 'audio/wav' }), 'sess.wav');
+  wfd.append('language', 'dene');
+  wfd.append('recording_session_id', String(sessId));
+  r = await owner.req('POST', `/api/work/${sessWi.work_item_id}/submit`, wfd, true);
+  check('flat: session-backed submit on a campaign-less entry succeeds (regression)',
+    r.status === 200, JSON.stringify(r.data));
+  await owner.req('POST', `/api/recording-sessions/${sessId}/end`, {});
+
   let cfd = new FormData();
   cfd.append('file', new Blob([makeWav(1)], { type: 'audio/wav' }), 'free.wav');
   cfd.append('language', 'dene');
   r = await owner.req('POST', `/api/entries/${freeEntry}/audio`, cfd, true);
   check('flat: recording on a campaign-less entry resolves its org via the corpus',
-    r.status === 201 && !!r.data.speaker_id, JSON.stringify({ s: r.status, sp: r.data?.speaker_id }));
+    (r.status === 201 || r.status === 200) && !!r.data.speaker_id, // 200 = superseding version
+    JSON.stringify({ s: r.status, sp: r.data?.speaker_id }));
   await owner.req('DELETE', `/api/entries/${freeEntry}`);
 
   // The frontend derives the collection from /corpora's default flag.
