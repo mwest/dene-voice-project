@@ -2395,7 +2395,7 @@ language.post('/entries/:id/audio', loadEntry, rejectTranslators, audioUpload, a
     return bad(res, 'Could not read that audio file — it may be corrupt or in an unsupported format. The entry was not changed.');
   }
 
-  const { session, error: sessionError } = sessionForUpload(req, req.entry.project_id);
+  const { session, error: sessionError } = sessionForUpload(req, req.entry);
   if (sessionError) {
     fs.rm(filePath, { force: true }, () => {});
     return bad(res, sessionError);
@@ -2525,13 +2525,19 @@ language.post('/recording-sessions/:id/end', (req, res) => {
   res.json(db.prepare('SELECT * FROM recording_sessions WHERE id = ?').get(session.id));
 });
 
-/** Resolve an optional recording_session_id on an upload: must belong to the
- *  entry's project, be run by the caller, and still be open. */
-function sessionForUpload(req, projectId) {
+/** Resolve an optional recording_session_id on an upload: must be run by
+ *  the caller, still open, and belong to the entry's COLLECTION — the
+ *  entry's origin campaign is irrelevant (entries may be campaign-less, and
+ *  a campaign session works its whole corpus). Legacy sessions without a
+ *  corpus fall back to origin-project equality. */
+function sessionForUpload(req, entry) {
   const sid = Number(req.body.recording_session_id || 0);
   if (!sid) return { session: null };
   const session = db.prepare('SELECT * FROM recording_sessions WHERE id = ?').get(sid);
-  if (!session || session.project_id !== projectId) return { error: 'Recording session not found for this project' };
+  const sameScope = session && (session.corpus_id != null
+    ? session.corpus_id === entry.corpus_id
+    : session.project_id === entry.project_id);
+  if (!sameScope) return { error: 'Recording session not found for this collection' };
   if (session.facilitator_user_id !== req.user.id) return { error: 'Not your recording session' };
   if (session.ended_at) return { error: 'This recording session has ended' };
   return { session };
@@ -2938,7 +2944,7 @@ language.post('/work/:id/submit', loadWorkItem, (req, res) => {
       : db
           .prepare('SELECT id FROM audio_files WHERE entry_id = ? AND uploaded_by = ? AND language = ? AND is_current = 1')
           .get(entry.id, req.user.id, language);
-    const { session, error: sessionError } = sessionForUpload(req, entry.project_id);
+    const { session, error: sessionError } = sessionForUpload(req, entry);
     if (sessionError) {
       fs.rm(filePath, { force: true }, () => {});
       return bad(res, sessionError);
