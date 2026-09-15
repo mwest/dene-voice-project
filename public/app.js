@@ -881,11 +881,12 @@ async function renderJobDetail(id) {
 async function renderCompensation() {
   view.innerHTML = `<div class="empty">Loading…</div>`;
   let data;
-  try { data = await api('/compensation'); }
+  try { data = await api(`/compensation?organization_id=${activeOrg()?.id}`); }
   catch (err) { view.innerHTML = `<div class="empty">${esc(err.message)}</div>`; return; }
 
   view.innerHTML = `
-    <div class="page-head"><h1>Compensation</h1></div>
+    <div class="page-head"><h1>Compensation</h1>
+      <span class="page-context">${esc(activeOrg()?.name ?? '')}</span></div>
     <div class="card">
       <p style="color:var(--muted);font-size:0.9rem;margin-top:0">
         Work is logged automatically as translators record and translate. Payments
@@ -925,7 +926,7 @@ function workEntryCell(w) {
 async function renderCompensationDetail(id) {
   view.innerHTML = `<div class="empty">Loading…</div>`;
   let d;
-  try { d = await api(`/compensation/${id}`); }
+  try { d = await api(`/compensation/${id}?organization_id=${activeOrg()?.id}`); }
   catch (err) { view.innerHTML = `<div class="empty">${esc(err.message)}</div>`; return; }
 
   const rateOf = (projectId, type) =>
@@ -987,6 +988,10 @@ async function renderCompensationDetail(id) {
         <summary style="cursor:pointer;color:var(--muted)">Add a manual adjustment (bonus / correction)</summary>
         <form id="adjust-form" style="margin-top:0.8rem">
           <div class="form-row">
+            <label class="field"><span>Campaign</span>
+              <select name="project" required>
+                ${d.projects.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}
+              </select></label>
             <label class="field"><span>Amount (use a minus sign to deduct)</span>
               <input type="number" name="amount" step="0.01" required placeholder="0.00"></label>
             <label class="field"><span>Reason (required)</span>
@@ -1060,6 +1065,7 @@ async function renderCompensationDetail(id) {
           paid_on: f.paid_on.value || undefined,
           method: f.method.value,
           note: f.note.value,
+          organization_id: activeOrg()?.id,
         },
       });
       toast('Payment recorded');
@@ -1074,7 +1080,11 @@ async function renderCompensationDetail(id) {
     try {
       await api(`/compensation/${id}/adjustments`, {
         method: 'POST',
-        body: { amount_cents: Math.round(parseFloat(f.amount.value) * 100), note: f.note.value },
+        body: {
+          project_id: Number(f.project.value),
+          amount_cents: Math.round(parseFloat(f.amount.value) * 100),
+          note: f.note.value,
+        },
       });
       toast('Adjustment added');
       renderCompensationDetail(id);
@@ -3810,8 +3820,8 @@ function route() {
   else if (hash === '#/orgs' && state.me.user.is_superadmin) renderOrgsAdmin();
   else if (hash === '#/jobs' && state.me.user.is_superadmin) renderJobs();
   else if ((m = hash.match(/^#\/jobs\/(\d+)$/)) && state.me.user.is_superadmin) renderJobDetail(m[1]);
-  else if (hash === '#/compensation' && isOrgAdmin()) renderCompensation();
-  else if ((m = hash.match(/^#\/compensation\/(\d+)$/)) && isOrgAdmin()) renderCompensationDetail(m[1]);
+  else if (hash === '#/compensation' && isActiveOrgAdmin()) renderCompensation();
+  else if ((m = hash.match(/^#\/compensation\/(\d+)$/)) && isActiveOrgAdmin()) renderCompensationDetail(m[1]);
   else if (hash === '#/people' && isOrgAdmin()) renderOrganization();
   else if (hash === '#/consent' && isOrgAdmin()) renderConsent();
   else if (hash === '#/public-site' && isActiveOrgAdmin()) renderPublicSite();

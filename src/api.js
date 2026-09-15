@@ -3539,7 +3539,14 @@ function requireAnyOrgAdmin(req, res, next) {
   // Admin compensation views are additionally scoped to orgs with Language
   // enabled (two-fixes §1.5); a contributor's own /me view stays global.
   const entitled = entitledLanguageOrgs();
-  const ids = adminOrgIdsFor(req.user).filter((id) => entitled.has(id));
+  let ids = adminOrgIdsFor(req.user).filter((id) => entitled.has(id));
+  // The UI passes its active organization; narrow to it so a multi-org admin
+  // sees one organization at a time, never a cross-org aggregate.
+  const only = req.query.organization_id ? Number(req.query.organization_id) : null;
+  if (only) {
+    if (!ids.includes(only)) return bad(res, 'Organization admin access required', 403);
+    ids = [only];
+  }
   if (!ids.length) return bad(res, 'Organization admin access required', 403);
   req.adminOrgIds = ids;
   next();
