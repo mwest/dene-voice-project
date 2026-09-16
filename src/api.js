@@ -561,7 +561,13 @@ platform.patch('/orgs/:id', (req, res) => {
   }
   const name = String(req.body?.name ?? '').trim();
   if (!name) return bad(res, 'Organization name is required');
-  db.prepare('UPDATE organizations SET name = ? WHERE id = ?').run(name, org.id);
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || null;
+  try {
+    db.prepare('UPDATE organizations SET name = ?, slug = ? WHERE id = ?').run(name, slug, org.id);
+  } catch (e) {
+    if (String(e.message).includes('UNIQUE')) return bad(res, 'An organization with that name already exists');
+    throw e;
+  }
   res.json(db.prepare('SELECT * FROM organizations WHERE id = ?').get(org.id));
 });
 

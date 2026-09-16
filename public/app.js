@@ -3476,8 +3476,9 @@ async function renderOrgsAdmin() {
   view.onclick = async (e) => {
     const ren = e.target.closest('button[data-org-rename]');
     if (ren) {
+      // A same-name submit is allowed on purpose: it re-derives the URL slug.
       const name = prompt('New organization name:', ren.dataset.name);
-      if (name === null || !name.trim() || name.trim() === ren.dataset.name) return;
+      if (name === null || !name.trim()) return;
       try {
         await api(`/orgs/${ren.dataset.orgRename}`, { method: 'PATCH', body: { name: name.trim() } });
         toast('Organization renamed');
@@ -3676,8 +3677,9 @@ async function renderOrganization() {
     </div>`;
 
   $('#org-rename-btn')?.addEventListener('click', async () => {
+    // A same-name submit is allowed on purpose: it re-derives the URL slug.
     const name = prompt('New organization name:', org.name);
-    if (name === null || !name.trim() || name.trim() === org.name) return;
+    if (name === null || !name.trim()) return;
     try {
       await api(`/orgs/${org.id}`, { method: 'PATCH', body: { name: name.trim() } });
       toast('Organization renamed');
