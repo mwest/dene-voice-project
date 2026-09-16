@@ -551,10 +551,14 @@ platform.post('/orgs', requireSuperadmin, (req, res) => {
   }
 });
 
+// The name is provisioning metadata (a superadmin sets it when creating the
+// org), so superadmins may correct it too — this grants no corpus access.
 platform.patch('/orgs/:id', (req, res) => {
   const org = db.prepare('SELECT * FROM organizations WHERE id = ?').get(req.params.id);
   if (!org) return bad(res, 'Organization not found', 404);
-  if (orgRole(req.user, org.id) !== 'owner_admin') return bad(res, 'Organization owner access required', 403);
+  if (!req.user.is_superadmin && orgRole(req.user, org.id) !== 'owner_admin') {
+    return bad(res, 'Organization owner access required', 403);
+  }
   const name = String(req.body?.name ?? '').trim();
   if (!name) return bad(res, 'Organization name is required');
   db.prepare('UPDATE organizations SET name = ? WHERE id = ?').run(name, org.id);

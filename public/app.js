@@ -3404,6 +3404,7 @@ async function renderOrgsAdmin() {
               <td><span class="badge ${o.language_status === 'enabled' ? 'status-verified' : 'incomplete'}">${o.language_status}</span></td>
               <td>${fmtDate(o.created_at)}</td>
               <td style="white-space:nowrap">
+                <button class="ghost small" data-org-rename="${o.id}" data-name="${esc(o.name)}">Rename</button>
                 <button class="ghost small" data-app-toggle="${o.id}" data-status="${o.language_status}" data-name="${esc(o.name)}">
                   ${o.language_status === 'enabled' ? 'Disable Language' : 'Enable Language'}</button>
               </td>
@@ -3473,6 +3474,19 @@ async function renderOrgsAdmin() {
   });
 
   view.onclick = async (e) => {
+    const ren = e.target.closest('button[data-org-rename]');
+    if (ren) {
+      const name = prompt('New organization name:', ren.dataset.name);
+      if (name === null || !name.trim() || name.trim() === ren.dataset.name) return;
+      try {
+        await api(`/orgs/${ren.dataset.orgRename}`, { method: 'PATCH', body: { name: name.trim() } });
+        toast('Organization renamed');
+        await loadMe(); // the org switcher may show the new name
+        renderTopbar();
+        renderOrgsAdmin();
+      } catch (err) { toast(err.message, true); }
+      return;
+    }
     const btn = e.target.closest('button[data-app-toggle]');
     if (!btn) return;
     const enabled = btn.dataset.status === 'enabled';
@@ -3516,6 +3530,7 @@ async function renderUsers() {
               <td>${u.audio_count}</td>
               <td>${fmtDate(u.created_at)}</td>
               <td style="white-space:nowrap">
+                <button class="ghost small" data-act="rename" data-id="${u.id}" data-name="${esc(u.name)}">Rename</button>
                 <button class="ghost small" data-act="reset" data-id="${u.id}" data-name="${esc(u.name)}">Reset password</button>
                 ${u.id === state.me.user.id ? '' : `
                   <button class="ghost small" data-act="super" data-id="${u.id}" data-super="${u.is_superadmin}">
@@ -3573,7 +3588,16 @@ async function renderUsers() {
     if (!btn) return;
     const id = btn.dataset.id;
 
-    if (btn.dataset.act === 'reset') {
+    if (btn.dataset.act === 'rename') {
+      const name = prompt(`New name for ${btn.dataset.name}:`, btn.dataset.name);
+      if (name === null || !name.trim() || name.trim() === btn.dataset.name) return;
+      try {
+        await api(`/users/${id}`, { method: 'PATCH', body: { name: name.trim() } });
+        toast('Name updated');
+        if (Number(id) === state.me.user.id) { await loadMe(); renderTopbar(); }
+        renderUsers();
+      } catch (err) { toast(err.message, true); }
+    } else if (btn.dataset.act === 'reset') {
       const pw = prompt(`New temporary password for ${btn.dataset.name} (min 8 characters):`);
       if (pw === null) return;
       try {
@@ -3617,7 +3641,8 @@ async function renderOrganization() {
 
   const roleLabel = { owner_admin: 'Owner', admin: 'Admin', member: 'Member', translator: 'Translator' };
   view.innerHTML = `
-    <div class="page-head"><h1>People</h1></div>
+    <div class="page-head"><h1>People</h1>
+      ${org.role === 'owner_admin' ? '<button class="ghost" id="org-rename-btn">Rename organization</button>' : ''}</div>
     <p style="color:var(--muted);max-width:60ch">One list, four roles — a person's role
       applies to everything <b>${esc(org.name)}</b> runs. <b>Owners</b> and <b>admins</b>
       manage people, projects, consent, compensation, and exports; <b>members</b> build the
@@ -3649,6 +3674,18 @@ async function renderOrganization() {
         <button type="submit">Add / set role</button>
       </form>
     </div>`;
+
+  $('#org-rename-btn')?.addEventListener('click', async () => {
+    const name = prompt('New organization name:', org.name);
+    if (name === null || !name.trim() || name.trim() === org.name) return;
+    try {
+      await api(`/orgs/${org.id}`, { method: 'PATCH', body: { name: name.trim() } });
+      toast('Organization renamed');
+      await loadMe(); // sidebar context + org switcher carry the name
+      renderTopbar();
+      renderOrganization();
+    } catch (err) { toast(err.message, true); }
+  });
 
   view.onclick = async (e) => {
     const rm = e.target.closest('button[data-org-remove]');
