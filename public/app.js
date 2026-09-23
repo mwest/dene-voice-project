@@ -3068,9 +3068,11 @@ async function renderPublicSite() {
         <div class="stat-tile"><div class="num">${c.publicly_visible}</div><div class="lbl">Publicly visible now</div></div>
       </div>
       <p style="color:var(--muted);max-width:60ch">Bulk publication publishes every
-        eligible entry together with its consent-eligible current recordings. Recordings
-        whose consent is unknown or does not permit public use are never published
-        automatically. Individual entries are published from their entry page.</p>
+        entry — words and phrases without a recording included — together with its
+        consent-eligible current recordings. Published entries appear on the public site
+        text-only until an eligible recording exists. Recordings whose consent is unknown
+        or does not permit public use are never published automatically. Individual
+        entries are published from their entry page.</p>
       <div class="rec-actions" style="justify-content:flex-start">
         <button class="secondary" id="ps-preview">Preview eligible</button>
         <button id="ps-publish" hidden>Publish eligible</button>
@@ -3107,7 +3109,7 @@ async function renderPublicSite() {
   });
 
   $('#ps-publish').addEventListener('click', async () => {
-    if (!confirm('Publish all eligible entries and their consent-eligible recordings to the public site?')) return;
+    if (!confirm('Publish ALL entries — including words and phrases without a recording — and their consent-eligible recordings to the public site?')) return;
     try {
       const r = await api(`/orgs/${org.id}/public-site/bulk-publish`, { method: 'POST', body: { apply: true } });
       toast(`Published ${r.entries_published} entries and ${r.recordings_published} recordings`);

@@ -13,7 +13,9 @@
 // An ENTRY is publicly eligible when ALL hold:
 //   belongs to the site's collection (corpus)
 //   explicitly published       (publication_status = 'public')
-//   has at least one publicly eligible recording
+// A recording is deliberately NOT required: unrecorded words and phrases are
+// part of the public dictionary, and their recordings appear if and when one
+// becomes eligible.
 import db from '../../../db.js';
 
 /** WHERE fragment for a publicly eligible recording, table aliased `a`. */
@@ -27,8 +29,7 @@ export const PUBLIC_RECORDING = `
  *  Binds ONE parameter: the site's corpus id. */
 export const PUBLIC_ENTRY = `
   e.corpus_id = ?
-  AND e.publication_status = 'public'
-  AND EXISTS (SELECT 1 FROM audio_files a WHERE a.entry_id = e.id AND ${PUBLIC_RECORDING})`;
+  AND e.publication_status = 'public'`;
 
 /** Publicly eligible recording count for an entry (correlated subquery). */
 export const PUBLIC_RECORDING_COUNT = `
@@ -61,20 +62,9 @@ export function publicRecordingByUid(corpusId, uid) {
 }
 
 /** Admin-only: why is this entry NOT publicly visible (spec §20)?
- *  Returns [] when the entry is publicly eligible. */
+ *  Returns [] when the entry is publicly eligible. Only publication blocks
+ *  visibility — an entry without an eligible recording still appears (text
+ *  only); the per-recording state on the admin entry page explains audio. */
 export function ineligibilityReasons(entry) {
-  const reasons = [];
-  if (entry.publication_status !== 'public') reasons.push('Entry not published');
-  const recs = db.prepare(
-    `SELECT a.is_current, a.publication_status, a.revoked_at, a.allow_language_learning
-     FROM audio_files a WHERE a.entry_id = ? AND a.is_current = 1`
-  ).all(entry.id);
-  if (!recs.length) reasons.push('No recording');
-  else if (!recs.some((a) => a.publication_status === 'public')) reasons.push('No published recording');
-  else if (!recs.some((a) => a.publication_status === 'public' && !a.revoked_at && a.allow_language_learning === 1)) {
-    reasons.push(recs.some((a) => a.publication_status === 'public' && a.revoked_at)
-      ? 'Published recording is revoked'
-      : 'Consent does not permit public presentation');
-  }
-  return reasons;
+  return entry.publication_status !== 'public' ? ['Entry not published'] : [];
 }

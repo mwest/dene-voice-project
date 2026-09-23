@@ -2595,13 +2595,17 @@ if (BASE.includes('localhost')) {
   // §42 publication matrix.
   r = await pub('/entries');
   const uids = r.data.entries.map((x) => x.uid);
+  const rowOf = (uid) => r.data.entries.find((x) => x.uid === uid);
   check('public: published entry with published+consented recording is listed',
     uids.includes(e1.uid), JSON.stringify(uids));
-  check('public: entry with no recording is absent', !uids.includes(e2.uid));
-  check('public: entry with only private recordings is absent', !uids.includes(e3.uid));
+  check('public: published entry with NO recording is listed (text-only)',
+    uids.includes(e2.uid) && rowOf(e2.uid).recording_count === 0, JSON.stringify(uids));
+  check('public: published entry with only private recordings lists without them',
+    uids.includes(e3.uid) && rowOf(e3.uid).recording_count === 0, JSON.stringify(rowOf(e3.uid)));
   check('public: private entry is absent despite public recording', !uids.includes(e4.uid));
-  check('public: published-but-unconsented recording never carries an entry', !uids.includes(e6.uid));
-  check('public: private totals are not revealed', r.data.total === 1, r.data.total);
+  check('public: unconsented recording stays hidden; its published entry shows text-only',
+    uids.includes(e6.uid) && rowOf(e6.uid).recording_count === 0, JSON.stringify(rowOf(e6.uid)));
+  check('public: private totals are not revealed', r.data.total === 4, r.data.total);
   check('public: list rows carry only approved fields',
     Object.keys(r.data.entries[0]).sort().join(',') === 'category,dene_text,english_text,kind,recording_count,uid',
     Object.keys(r.data.entries[0]).join(','));
@@ -2660,16 +2664,23 @@ if (BASE.includes('localhost')) {
   check('public: search finds public content', r.data.results[0]?.uid === e1.uid,
     JSON.stringify(r.data.results));
 
-  // §43 revocation is immediate; republication too.
+  // §43 revocation is immediate; republication too. The ENTRY stays public
+  // (text-only policy) — only the audio disappears.
   publishRec(r1b.id, false);
   r = await pub('/entries');
-  check('public: unpublishing the only recording removes the entry at once',
-    !r.data.entries.some((x) => x.uid === e1.uid));
+  {
+    const row = r.data.entries.find((x) => x.uid === e1.uid);
+    check('public: unpublishing the only recording keeps the entry, text-only',
+      !!row && row.recording_count === 0, JSON.stringify(row));
+  }
   check('public: unpublished audio is 404 at once', (await pub(`/recordings/${r1b.uid}/audio`)).status === 404);
-  check('public: search stops returning it', (await pub('/search?q=fish')).data.results.length === 0);
+  check('public: search still returns the text-only entry',
+    (await pub('/search?q=fish')).data.results.some((x) => x.uid === e1.uid));
   publishRec(r1b.id);
-  r = await pub('/entries');
-  check('public: republishing restores it', r.data.entries.some((x) => x.uid === e1.uid));
+  r = await pub(`/entries/${e1.uid}`);
+  check('public: republishing restores the recording',
+    r.status === 200 && r.data.recordings.length === 1 && r.data.recordings[0].uid === r1b.uid,
+    JSON.stringify(r.data.recordings));
 
   // §6 deliberate speaker attribution.
   const spk = db.prepare('SELECT speaker_id FROM audio_files WHERE id = ?').get(r1b.id).speaker_id;
@@ -2721,16 +2732,18 @@ if (BASE.includes('localhost')) {
 
   // --- publication management (phase C, spec §19–§20, §34) ---
   r = await powner.req('PATCH', `/api/entries/${e2.id}/publication`, { status: 'public' });
-  check('pubadmin: entry publish route works and explains ineligibility',
-    r.status === 200 && r.data.publication_status === 'public' && r.data.reasons.includes('No recording'),
+  check('pubadmin: entry publish route works; an unrecorded entry has no blockers',
+    r.status === 200 && r.data.publication_status === 'public' && r.data.reasons.length === 0,
     JSON.stringify(r.data));
   r = await qowner.req('PATCH', `/api/entries/${e2.id}/publication`, { status: 'private' });
   check('pubadmin: cross-org admin cannot touch publication', r.status === 403 || r.status === 404, r.status);
   r = await powner.req('PATCH', `/api/audio/${r3.id}/publication`, { status: 'public' });
   check('pubadmin: recording publish route works', r.status === 200, JSON.stringify(r.data));
-  r = await pub('/entries', 'https://pub-a.example');
-  check('pubadmin: route-published recording still gated by consent',
-    !r.data.entries.some((x) => x.uid === e3.uid));
+  r = await pub(`/entries/${e3.uid}`, 'https://pub-a.example');
+  check('pubadmin: route-published recording still gated by consent (entry text-only)',
+    r.status === 200 && r.data.recordings.length === 0 &&
+    (await pub(`/recordings/${r3.uid}/audio`)).status === 404,
+    JSON.stringify(r.data.recordings));
   r = await powner.req('GET', `/api/entries/${e1.id}`);
   check('pubadmin: admin entry detail carries publication state',
     r.data.publication?.entry_status === 'public' && Array.isArray(r.data.publication?.recordings),
@@ -2752,8 +2765,15 @@ if (BASE.includes('localhost')) {
     JSON.stringify(r.data));
   r = await pub('/entries', 'https://pub-a.example');
   check('pubadmin: bulk-published entry is publicly visible', r.data.entries.some((x) => x.uid === e8.uid));
-  check('pubadmin: bulk never surfaces consent-ineligible entries',
-    !r.data.entries.some((x) => x.uid === e3.uid) && !r.data.entries.some((x) => x.uid === e6.uid));
+  check('pubadmin: bulk publishes previously private entries too (text-only policy)',
+    r.data.entries.some((x) => x.uid === e4.uid), JSON.stringify(r.data.entries.map((x) => x.uid)));
+  check('pubadmin: bulk never publishes consent-ineligible recordings',
+    r.data.entries.find((x) => x.uid === e6.uid)?.recording_count === 0 &&
+    (await pub(`/recordings/${r6.uid}/audio`)).status === 404,
+    JSON.stringify(r.data.entries.find((x) => x.uid === e6.uid)));
+  // Bulk now publishes EVERY entry, the search-privacy fixture included —
+  // restore it to private for the SEO/404 checks below.
+  publishEntry(e7.id, false);
   r = await powner.req('PATCH', `/api/speakers/${spk}/public`, { public_display_name: 'J. Public', public_attribution_enabled: true });
   check('pubadmin: speaker attribution route works',
     r.status === 200 && r.data.public_display_name === 'J. Public', JSON.stringify(r.data));

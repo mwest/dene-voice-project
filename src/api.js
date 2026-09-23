@@ -17,7 +17,7 @@ import { DOCUMENTS_DIR } from './apps/language/documents/storage.js';
 import { selfSpeakerFor, orgOfProject } from './apps/language/speakers.js';
 import { organizationHasApp, entitledOrgIds } from './platform/entitlements.js';
 import { uuidv7 } from './platform/uid.js';
-import { ineligibilityReasons, PUBLIC_RECORDING } from './apps/language/public/eligibility.js';
+import { ineligibilityReasons } from './apps/language/public/eligibility.js';
 import { createRequire } from 'node:module';
 import { backfillEmbeddings } from '../scripts/embed-backfill.js';
 import { APP_URL, inviteEmail, requestFormEmail, requestNotifyEmail, resetEmail, sendMail } from './mail.js';
@@ -921,10 +921,11 @@ function publicationCounts(corpusId) {
       `SELECT COUNT(*) n FROM entries e WHERE e.corpus_id = ?
        AND EXISTS (SELECT 1 FROM audio_files a WHERE a.entry_id = e.id AND a.is_current = 1
                    AND a.revoked_at IS NULL AND a.allow_language_learning = 1)`),
+    // Visibility no longer requires a recording — published entries appear
+    // text-only until an eligible recording exists.
     publicly_visible: one(
       `SELECT COUNT(*) n FROM entries e WHERE e.corpus_id = ?
-       AND e.publication_status = 'public'
-       AND EXISTS (SELECT 1 FROM audio_files a WHERE a.entry_id = e.id AND ${PUBLIC_RECORDING})`),
+       AND e.publication_status = 'public'`),
     published_entries: one(
       `SELECT COUNT(*) n FROM entries e WHERE e.corpus_id = ? AND e.publication_status = 'public'`),
   };
@@ -977,16 +978,15 @@ language.put('/orgs/:id/public-site', (req, res) => {
 });
 
 // Bulk publication (spec §20): preview first, then an explicit apply.
-// Publishes eligible entries AND their consent-eligible current recordings —
-// never a recording whose consent does not clearly permit public use.
+// Publishes ALL entries — words and phrases without a recording included —
+// AND their consent-eligible current recordings; never a recording whose
+// consent does not clearly permit public use.
 language.post('/orgs/:id/public-site/bulk-publish', (req, res) => {
   const orgId = requireOrgAdminParam(req, res);
   if (!orgId) return;
   const corpusId = defaultCorpusFor(db, orgId).id;
   const apply = req.body?.apply === true;
-  const eligibleWhere = `e.corpus_id = ?
-    AND EXISTS (SELECT 1 FROM audio_files a WHERE a.entry_id = e.id AND a.is_current = 1
-                AND a.revoked_at IS NULL AND a.allow_language_learning = 1)`;
+  const eligibleWhere = `e.corpus_id = ?`;
   const toPublish = db.prepare(
     `SELECT COUNT(*) n FROM entries e WHERE ${eligibleWhere} AND e.publication_status = 'private'`
   ).get(corpusId).n;
