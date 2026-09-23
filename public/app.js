@@ -3050,6 +3050,8 @@ async function renderPublicSite() {
         </div>
         <label class="field"><span>Site description</span>
           <input type="text" name="site_description" value="${esc(s.site_description ?? '')}" placeholder="Shown on the public home page and in search engines"></label>
+        <label class="field"><span>Footer text</span>
+          <input type="text" name="site_footer" value="${esc(s.site_footer ?? '')}" placeholder="Shown at the bottom of every public page — blank uses the default line"></label>
         <label class="field" style="max-width:420px"><span>
           <input type="checkbox" name="show_speaker_names" ${s.show_speaker_names !== 0 ? 'checked' : ''}>
           Show speaker names (only speakers with explicit public attribution — set per speaker on the
@@ -3090,6 +3092,7 @@ async function renderPublicSite() {
           enabled: f.enabled.checked,
           site_title: f.site_title.value,
           site_description: f.site_description.value,
+          site_footer: f.site_footer.value,
           public_domain: f.public_domain.value,
           show_speaker_names: f.show_speaker_names.checked,
         },

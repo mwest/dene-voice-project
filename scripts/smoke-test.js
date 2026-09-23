@@ -2748,11 +2748,19 @@ if (BASE.includes('localhost')) {
   check('pubadmin: admin entry detail carries publication state',
     r.data.publication?.entry_status === 'public' && Array.isArray(r.data.publication?.recordings),
     JSON.stringify(r.data.publication ?? null));
-  r = await powner.req('PUT', `/api/orgs/${pOrg}/public-site`, { site_title: 'Renamed Site', enabled: true });
-  check('pubadmin: settings PUT upserts', r.status === 200 && r.data.settings.site_title === 'Renamed Site',
-    JSON.stringify(r.data));
+  r = await powner.req('PUT', `/api/orgs/${pOrg}/public-site`,
+    { site_title: 'Renamed Site', site_footer: 'Custom footer © test', enabled: true });
+  check('pubadmin: settings PUT upserts', r.status === 200 && r.data.settings.site_title === 'Renamed Site' &&
+    r.data.settings.site_footer === 'Custom footer © test', JSON.stringify(r.data));
   r = await pub('/config', 'https://pub-a.example');
-  check('pubadmin: public config reflects settings immediately', r.data.site_title === 'Renamed Site');
+  check('pubadmin: public config reflects settings immediately',
+    r.data.site_title === 'Renamed Site' && r.data.site_footer === 'Custom footer © test',
+    JSON.stringify(r.data));
+  r = await powner.req('PUT', `/api/orgs/${pOrg}/public-site`, { site_footer: '' });
+  check('pubadmin: blank footer clears to the default',
+    r.status === 200 && r.data.settings.site_footer === null &&
+    (await pub('/config', 'https://pub-a.example')).data.site_footer === '',
+    JSON.stringify(r.data.settings));
   const e8 = await mkEntry('golo', 'ptarmigan');
   const r8 = await mkRec(e8.id);
   db.prepare(`UPDATE audio_files SET allow_language_learning = 1 WHERE id = ?`).run(r8.id);

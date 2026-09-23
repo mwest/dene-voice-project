@@ -99,6 +99,7 @@ publicLanguage.get('/config', limit('config', 600, 5 * 60 * 1000), (req, res) =>
   res.json({
     site_title: req.site.site_title ?? 'Language Collection',
     site_description: req.site.site_description ?? '',
+    site_footer: req.site.site_footer ?? '',
     show_speaker_names: !!req.site.show_speaker_names,
     allow_downloads: !!req.site.allow_downloads,
   });

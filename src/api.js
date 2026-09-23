@@ -950,11 +950,12 @@ language.put('/orgs/:id/public-site', (req, res) => {
   try {
     db.prepare(
       `INSERT INTO public_language_settings (organization_id, enabled, site_title, site_description,
-         public_domain, show_speaker_names, allow_downloads)
-       VALUES (@org, @enabled, @title, @desc, @domain, @speakers, @downloads)
+         site_footer, public_domain, show_speaker_names, allow_downloads)
+       VALUES (@org, @enabled, @title, @desc, @footer, @domain, @speakers, @downloads)
        ON CONFLICT(organization_id) DO UPDATE SET
          enabled = excluded.enabled, site_title = excluded.site_title,
-         site_description = excluded.site_description, public_domain = excluded.public_domain,
+         site_description = excluded.site_description, site_footer = excluded.site_footer,
+         public_domain = excluded.public_domain,
          show_speaker_names = excluded.show_speaker_names, allow_downloads = excluded.allow_downloads,
          updated_at = datetime('now')`
     ).run({
@@ -962,6 +963,7 @@ language.put('/orgs/:id/public-site', (req, res) => {
       enabled: b.enabled !== undefined ? (b.enabled ? 1 : 0) : (prev?.enabled ?? 0),
       title: b.site_title !== undefined ? (String(b.site_title).trim() || null) : (prev?.site_title ?? null),
       desc: b.site_description !== undefined ? (String(b.site_description).trim() || null) : (prev?.site_description ?? null),
+      footer: b.site_footer !== undefined ? (String(b.site_footer).trim() || null) : (prev?.site_footer ?? null),
       domain: domain !== undefined ? domain : (prev?.public_domain ?? null),
       speakers: b.show_speaker_names !== undefined ? (b.show_speaker_names ? 1 : 0) : (prev?.show_speaker_names ?? 1),
       downloads: b.allow_downloads !== undefined ? (b.allow_downloads ? 1 : 0) : (prev?.allow_downloads ?? 0),

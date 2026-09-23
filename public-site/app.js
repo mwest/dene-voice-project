@@ -181,6 +181,6 @@ async function route() {
   try { siteConfig = await api('/config'); } catch { /* defaults stand */ }
   document.getElementById('site-title').textContent = siteConfig.site_title;
   document.getElementById('site-footer').innerHTML =
-    `<p>${esc(siteConfig.site_title)} — a living collection of Dene language knowledge.</p>`;
+    `<p>${esc(siteConfig.site_footer || `${siteConfig.site_title} — a living collection of Dene language knowledge.`)}</p>`;
   route();
 })();
