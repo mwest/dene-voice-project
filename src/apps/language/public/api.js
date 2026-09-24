@@ -12,7 +12,7 @@ import { embed, cosine, fromBlob, MODEL } from '../../../embed.js';
 import { rateLimited } from '../../../api.js';
 import { defaultCorpusFor } from '../corpus.js';
 import {
-  PUBLIC_ENTRY, PUBLIC_RECORDING_COUNT, PUBLIC_SPEAKER,
+  PUBLIC_ENTRY, PUBLIC_RECORDING, PUBLIC_RECORDING_COUNT, PUBLIC_SPEAKER,
   publicEntryByUid, publicRecordingByUid,
 } from './eligibility.js';
 
@@ -127,6 +127,13 @@ publicLanguage.get('/entries', limit('entries', 600, 5 * 60 * 1000), (req, res) 
     where.push('e.category = ?');
     params.push(String(req.query.category));
   }
+  // "has audio" means a publicly ELIGIBLE recording — same rule as the badge
+  // count, so the filter can never reveal private or unconsented audio.
+  if (req.query.has_audio === 'yes') {
+    where.push(`EXISTS (SELECT 1 FROM audio_files a WHERE a.entry_id = e.id AND ${PUBLIC_RECORDING})`);
+  } else if (req.query.has_audio === 'no') {
+    where.push(`NOT EXISTS (SELECT 1 FROM audio_files a WHERE a.entry_id = e.id AND ${PUBLIC_RECORDING})`);
+  }
   const letter = String(req.query.letter ?? '').trim();
   if (letter) {
     where.push('e.dene_text LIKE ?');
@@ -142,6 +149,18 @@ publicLanguage.get('/entries', limit('entries', 600, 5 * 60 * 1000), (req, res) 
   ).all(...params, limitN, offset);
   res.set('Cache-Control', JSON_CACHE);
   res.json({ entries, total, limit: limitN, offset });
+});
+
+// Distinct categories of publicly eligible entries — drives the public
+// category filter. Counts are public-entry counts only.
+publicLanguage.get('/categories', limit('entries', 600, 5 * 60 * 1000), (req, res) => {
+  const categories = db.prepare(
+    `SELECT e.category AS name, COUNT(*) AS count FROM entries e
+     WHERE ${PUBLIC_ENTRY} AND e.category IS NOT NULL AND e.category <> ''
+     GROUP BY e.category ORDER BY e.category COLLATE NOCASE`
+  ).all(req.corpusId);
+  res.set('Cache-Control', JSON_CACHE);
+  res.json({ categories });
 });
 
 publicLanguage.get('/entries/:uid', limit('entries', 600, 5 * 60 * 1000), (req, res) => {

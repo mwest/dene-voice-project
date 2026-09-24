@@ -64,6 +64,16 @@ const entryRow = (e) => `
     </a>
   </li>`;
 
+const FILTER_KEYS = ['kind', 'category', 'has_audio'];
+
+/** The active list filters, read from the filter bar (empty values omitted). */
+function currentFilters() {
+  const f = document.querySelector('[data-filters]');
+  const out = {};
+  if (f) for (const k of FILTER_KEYS) { if (f[k].value) out[k] = f[k].value; }
+  return out;
+}
+
 async function renderHome() {
   document.title = siteConfig.site_title;
   main.innerHTML = `
@@ -71,30 +81,72 @@ async function renderHome() {
       <h1>${esc(siteConfig.site_title)}</h1>
       ${siteConfig.site_description ? `<p class="lede">${esc(siteConfig.site_description)}</p>` : ''}
       ${searchBox()}
-      <nav class="browse-links" aria-label="Browse">
-        <a class="chip" href="/?kind=word">Browse words</a>
-        <a class="chip" href="/?kind=phrase">Browse phrases</a>
-      </nav>
+      <form class="filters" data-filters aria-label="Filter the collection">
+        <label>Type
+          <select name="kind">
+            <option value="">Words &amp; phrases</option>
+            <option value="word">Words</option>
+            <option value="phrase">Phrases</option>
+          </select></label>
+        <label>Category
+          <select name="category"><option value="">All categories</option></select></label>
+        <label>Audio
+          <select name="has_audio">
+            <option value="">All entries</option>
+            <option value="yes">With audio</option>
+            <option value="no">Without audio</option>
+          </select></label>
+      </form>
     </section>
     <section aria-labelledby="browse-head">
       <h2 id="browse-head" class="visually-hidden">Entries</h2>
       <div id="list" aria-live="polite"><p class="muted">Loading…</p></div>
     </section>`;
   wireSearch();
+
+  // Filters live in the URL so filtered views are shareable and survive
+  // back/forward. Unknown values simply fall back to "all".
   const params = new URLSearchParams(location.search);
-  loadList(0, params.get('kind') ?? '');
+  const f = document.querySelector('[data-filters]');
+  f.kind.value = params.get('kind') ?? '';
+  if (f.kind.selectedIndex === -1) f.kind.value = '';
+  f.has_audio.value = params.get('has_audio') ?? '';
+  if (f.has_audio.selectedIndex === -1) f.has_audio.value = '';
+  try {
+    const { categories } = await api('/categories');
+    if (categories.length) {
+      f.category.innerHTML = '<option value="">All categories</option>' +
+        categories.map((c) => `<option value="${esc(c.name)}">${esc(c.name)}</option>`).join('');
+    } else {
+      f.category.closest('label').hidden = true;
+    }
+  } catch { f.category.closest('label').hidden = true; }
+  f.category.value = params.get('category') ?? '';
+  if (f.category.selectedIndex === -1) f.category.value = '';
+
+  f.addEventListener('change', () => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(currentFilters())) qs.set(k, v);
+    const s = qs.toString();
+    history.replaceState(null, '', s ? `/?${s}` : '/');
+    loadList(0);
+  });
+  loadList(0);
 }
 
-async function loadList(offset, kind) {
+async function loadList(offset) {
   const box = document.getElementById('list');
   if (!box) return;
+  const filters = currentFilters();
   const qs = new URLSearchParams({ limit: 50, offset });
-  if (kind) qs.set('kind', kind);
+  for (const [k, v] of Object.entries(filters)) qs.set(k, v);
   let data;
   try { data = await api(`/entries?${qs}`); }
   catch { box.innerHTML = '<p class="muted">The collection is not available right now.</p>'; return; }
   if (!data.entries.length) {
-    box.innerHTML = '<p class="muted">Nothing published yet — please check back.</p>';
+    box.innerHTML = Object.keys(filters).length
+      ? '<p class="muted">No entries match these filters.</p>'
+      : '<p class="muted">Nothing published yet — please check back.</p>';
     return;
   }
   box.innerHTML = `
@@ -105,8 +157,8 @@ async function loadList(offset, kind) {
       <span>${offset + 1}–${Math.min(offset + data.limit, data.total)} of ${data.total}</span>
       <button id="pg-next" ${offset + data.limit >= data.total ? 'disabled' : ''}>Next ›</button>
     </nav>` : ''}`;
-  document.getElementById('pg-prev')?.addEventListener('click', () => loadList(Math.max(0, offset - 50), kind));
-  document.getElementById('pg-next')?.addEventListener('click', () => loadList(offset + 50, kind));
+  document.getElementById('pg-prev')?.addEventListener('click', () => loadList(Math.max(0, offset - 50)));
+  document.getElementById('pg-next')?.addEventListener('click', () => loadList(offset + 50));
 }
 
 async function renderSearch(q) {

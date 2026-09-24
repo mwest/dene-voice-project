@@ -2610,6 +2610,26 @@ if (BASE.includes('localhost')) {
     Object.keys(r.data.entries[0]).sort().join(',') === 'category,dene_text,english_text,kind,recording_count,uid',
     Object.keys(r.data.entries[0]).join(','));
 
+  // Public list filters: has_audio means a publicly ELIGIBLE recording.
+  r = await pub('/entries?has_audio=yes');
+  check('public: has_audio=yes returns only entries with eligible audio',
+    r.data.entries.some((x) => x.uid === e1.uid) && r.data.entries.every((x) => x.recording_count > 0),
+    JSON.stringify(r.data.entries.map((x) => [x.uid, x.recording_count])));
+  r = await pub('/entries?has_audio=no');
+  check('public: has_audio=no returns the text-only entries',
+    r.data.entries.some((x) => x.uid === e2.uid) && r.data.entries.some((x) => x.uid === e3.uid) &&
+    !r.data.entries.some((x) => x.uid === e1.uid) && r.data.entries.every((x) => x.recording_count === 0),
+    JSON.stringify(r.data.entries.map((x) => x.uid)));
+  db.prepare(`UPDATE entries SET category = 'animals' WHERE id = ?`).run(e1.id);
+  r = await pub('/categories');
+  check('public: categories lists public categories with counts',
+    r.status === 200 && r.data.categories.some((c) => c.name === 'animals' && c.count >= 1),
+    JSON.stringify(r.data));
+  r = await pub('/entries?category=animals&has_audio=yes');
+  check('public: category + audio filters combine',
+    r.data.entries.length >= 1 && r.data.entries.every((x) => x.category === 'animals' && x.recording_count > 0),
+    JSON.stringify(r.data.entries));
+
   r = await pub(`/entries/${e1.uid}`);
   check('public: entry detail loads with its recording',
     r.status === 200 && r.data.recordings.length === 1 && r.data.recordings[0].uid === r1.uid,
