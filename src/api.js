@@ -13,7 +13,7 @@ import { parseCsv } from './apps/language/csv.js';
 import * as documents from './apps/language/documents/service.js';
 import { masterSearch, homeFeed } from './apps/language/search/service.js';
 import { defaultCorpusFor } from './apps/language/corpus.js';
-import { DOCUMENTS_DIR } from './apps/language/documents/storage.js';
+import { DOCUMENTS_DIR, removeOriginal } from './apps/language/documents/storage.js';
 import { selfSpeakerFor, orgOfProject } from './apps/language/speakers.js';
 import { organizationHasApp, entitledOrgIds } from './platform/entitlements.js';
 import { uuidv7 } from './platform/uid.js';
@@ -636,24 +636,92 @@ platform.post('/orgs/:id/members', async (req, res) => {
 // consent profiles cascade. Financial history (work_log/payments) must outlive
 // the org, so any rows attributed to it are detached to legacy (NULL org) —
 // they remain visible to the contributor via /me, invisible to admin views.
+// Deleting an organization — two authorities, two shapes:
+// - The org's OWNER may delete an EMPTY organization (no campaigns, no
+//   language content): tenancy cleanup; data is never destroyed as a side
+//   effect.
+// - A platform SUPERADMIN may DECOMMISSION an organization outright,
+//   destroying its whole collection — campaigns, entries, recordings,
+//   documents, speakers — by typing back the exact organization name
+//   (confirm_name). Deprovisioning is platform authority (the operator
+//   created the tenant); nothing is read or exported on the way out, so the
+//   no-implicit-corpus-access rule is not softened — only destruction, with
+//   an explicit typed confirmation, is possible.
 platform.delete('/orgs/:id', (req, res) => {
   const org = db.prepare('SELECT * FROM organizations WHERE id = ?').get(req.params.id);
   if (!org) return bad(res, 'Organization not found', 404);
-  if (orgRole(req.user, org.id) !== 'owner_admin') return bad(res, 'Organization owner access required', 403);
-  if (db.prepare('SELECT 1 FROM projects WHERE organization_id = ? LIMIT 1').get(org.id)) {
-    return bad(res, 'This organization still owns campaigns — move or delete them first');
+  const isOwner = orgRole(req.user, org.id) === 'owner_admin';
+  if (!isOwner && !req.user.is_superadmin) {
+    return bad(res, 'Organization owner access required', 403);
   }
-  // The default Language collection (and any other corpus) goes with the org,
-  // but only once it holds no content — language data is never deleted as a
-  // side effect of tenancy cleanup.
-  const contentful = db.prepare(
+
+  const hasProjects = !!db.prepare('SELECT 1 FROM projects WHERE organization_id = ? LIMIT 1').get(org.id);
+  const contentful = !!db.prepare(
     `SELECT 1 FROM corpora c WHERE c.organization_id = ? AND (
        EXISTS (SELECT 1 FROM entries e WHERE e.corpus_id = c.id) OR
        EXISTS (SELECT 1 FROM documents d WHERE d.corpus_id = c.id)) LIMIT 1`
   ).get(org.id);
-  if (contentful) {
-    return bad(res, 'This organization still owns language content — export and remove it first');
+
+  if (hasProjects || contentful) {
+    if (!req.user.is_superadmin) {
+      return bad(res, hasProjects
+        ? 'This organization still owns campaigns — move or delete them first'
+        : 'This organization still owns language content — export and remove it first');
+    }
+    if (req.body?.confirm_name !== org.name) {
+      return bad(res, 'Type the exact organization name to confirm deleting it and ALL of its content');
+    }
+
+    // Ids are server-side integers, safe to inline; -1 keeps empty IN () valid.
+    const corpusIds = db.prepare('SELECT id FROM corpora WHERE organization_id = ?').all(org.id).map((r) => r.id);
+    const projIds = db.prepare('SELECT id FROM projects WHERE organization_id = ?').all(org.id).map((r) => r.id);
+    const cIn = corpusIds.join(',') || '-1';
+    const pIn = projIds.join(',') || '-1';
+    const entryWhere = `(e.corpus_id IN (${cIn}) OR e.project_id IN (${pIn}))`;
+    // Files to remove AFTER the transaction commits: every recording version's
+    // master + derivative, and every document version's original.
+    const audioRows = db.prepare(
+      `SELECT a.stored_name, a.playback_stored_name FROM audio_files a
+       JOIN entries e ON e.id = a.entry_id WHERE ${entryWhere}`
+    ).all();
+    const docKeys = db.prepare(
+      `SELECT dv.storage_key FROM document_versions dv
+       JOIN documents d ON d.id = dv.document_id WHERE d.corpus_id IN (${cIn})`
+    ).all().map((r) => r.storage_key);
+    const docCount = db.prepare(`SELECT COUNT(*) n FROM documents WHERE corpus_id IN (${cIn})`).get().n;
+    const speakerCount = db.prepare('SELECT COUNT(*) n FROM speakers WHERE organization_id = ?').get(org.id).n;
+
+    let deletedEntries = 0;
+    db.transaction(() => {
+      // Entries first (audio_files/entry_texts/sources/work_items cascade);
+      // entries.project_id has no cascade, so they must precede projects.
+      deletedEntries = db.prepare(`DELETE FROM entries WHERE id IN (SELECT e.id FROM entries e WHERE ${entryWhere})`).run().changes;
+      db.prepare('DELETE FROM projects WHERE organization_id = ?').run(org.id);
+      db.prepare(`DELETE FROM recording_sessions WHERE speaker_id IN (SELECT id FROM speakers WHERE organization_id = ?)`).run(org.id);
+      db.prepare('DELETE FROM speakers WHERE organization_id = ?').run(org.id);
+      db.prepare('DELETE FROM corpora WHERE organization_id = ?').run(org.id); // documents cascade
+      db.prepare('DELETE FROM consent_profiles WHERE organization_id = ?').run(org.id);
+      // Contributors keep their personal earning history; only the tenant
+      // attribution is cleared (same as the empty-org path).
+      db.prepare('UPDATE work_log SET organization_id = NULL WHERE organization_id = ?').run(org.id);
+      db.prepare('UPDATE payments SET organization_id = NULL WHERE organization_id = ?').run(org.id);
+      db.prepare('DELETE FROM organizations WHERE id = ?').run(org.id);
+    })();
+    for (const f of audioRows) rmAudioFiles(f);
+    for (const k of docKeys) { try { removeOriginal(k); } catch { /* best-effort file cleanup */ } }
+    return res.json({
+      ok: true,
+      deleted: {
+        projects: projIds.length,
+        entries: deletedEntries,
+        recordings: audioRows.length,
+        documents: docCount,
+        speakers: speakerCount,
+      },
+    });
   }
+
+  // Empty organization: plain tenancy cleanup (owner or superadmin).
   db.transaction(() => {
     db.prepare('UPDATE work_log SET organization_id = NULL WHERE organization_id = ?').run(org.id);
     db.prepare('UPDATE payments SET organization_id = NULL WHERE organization_id = ?').run(org.id);
@@ -662,6 +730,7 @@ platform.delete('/orgs/:id', (req, res) => {
     db.prepare(`DELETE FROM recording_sessions WHERE speaker_id IN (SELECT id FROM speakers WHERE organization_id = ?)`).run(org.id);
     db.prepare('DELETE FROM speakers WHERE organization_id = ?').run(org.id);
     db.prepare('DELETE FROM corpora WHERE organization_id = ?').run(org.id);
+    db.prepare('DELETE FROM consent_profiles WHERE organization_id = ?').run(org.id);
     db.prepare('DELETE FROM organizations WHERE id = ?').run(org.id);
   })();
   res.json({ ok: true });

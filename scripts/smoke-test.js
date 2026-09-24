@@ -3159,6 +3159,64 @@ if (BASE.includes('localhost')) {
   }
 }
 
+// --- superadmin org decommission: delete an organization WITH its content ---
+{
+  const ts = Date.now();
+  const dEmail = `decomm-${ts}@test.ca`;
+  r = await sa.req('POST', '/api/users', { email: dEmail, name: 'Decomm Owner', password: 'decomm-pass-1' });
+  const dUserId = r.data.user_id ?? r.data.id;
+  r = await sa.req('POST', '/api/orgs', { name: `Decomm Org ${ts}`, owner_email: dEmail });
+  const dOrg = r.data.id;
+  const downer = client();
+  await downer.req('POST', '/api/login', { email: dEmail, password: 'decomm-pass-1' });
+
+  // Content: a campaign, an entry with a recording, and a ready document.
+  r = await downer.req('POST', '/api/projects', { name: `Decomm Camp ${ts}` });
+  const dProj = r.data.id;
+  r = await downer.req('POST', '/api/entries', { project_id: dProj, dene_text: 'tł’ok', english_text: 'grass' });
+  const dEntry = r.data.id;
+  let dfd = new FormData();
+  dfd.append('file', new Blob([makeWav(1)], { type: 'audio/wav' }), 'decomm.wav');
+  dfd.append('language', 'dene');
+  r = await downer.req('POST', `/api/entries/${dEntry}/audio`, dfd, true);
+  check('decomm: recording uploaded', r.status === 201, JSON.stringify(r.data));
+  const dCorpus = (await downer.req('GET', '/api/corpora')).data.corpora.find((c) => c.is_default)?.id;
+  dfd = new FormData();
+  dfd.append('file', new Blob([Buffer.from('decommission test document\n')]), 'decomm.txt');
+  dfd.append('corpus_id', String(dCorpus));
+  r = await downer.req('POST', '/api/documents', dfd, true);
+  check('decomm: document uploaded', r.status === 201 || r.status === 200, JSON.stringify(r.data));
+  const dDoc = r.data.id;
+  for (let i = 0; i < 80 && dDoc; i++) {
+    const d = (await downer.req('GET', `/api/documents/${dDoc}`)).data;
+    if (['ready', 'failed'].includes(d.status)) break;
+    await new Promise((res) => setTimeout(res, 500));
+  }
+
+  // The OWNER still cannot delete a contentful org (unchanged policy).
+  r = await downer.req('DELETE', `/api/orgs/${dOrg}`, { confirm_name: `Decomm Org ${ts}` });
+  check('decomm: owner still cannot delete a contentful org', r.status === 400, `${r.status}`);
+  // Superadmin must type the exact name.
+  r = await sa.req('DELETE', `/api/orgs/${dOrg}`);
+  check('decomm: superadmin without confirm_name is refused', r.status === 400, `${r.status}`);
+  r = await sa.req('DELETE', `/api/orgs/${dOrg}`, { confirm_name: 'wrong name' });
+  check('decomm: wrong confirmation name refused', r.status === 400, `${r.status}`);
+  // The real thing.
+  r = await sa.req('DELETE', `/api/orgs/${dOrg}`, { confirm_name: `Decomm Org ${ts}` });
+  check('decomm: superadmin deletes the org with all its content',
+    r.status === 200 && r.data.deleted?.projects === 1 && r.data.deleted?.entries === 1 &&
+    r.data.deleted?.recordings === 1 && r.data.deleted?.documents === 1,
+    JSON.stringify(r.data));
+  r = await downer.req('GET', '/api/me');
+  check('decomm: former owner has no trace of the org', r.status === 200 &&
+    !(r.data.orgs ?? []).some((o) => o.id === dOrg), JSON.stringify(r.data.orgs));
+  r = await downer.req('GET', '/api/entries');
+  check('decomm: the collection is gone for its former members',
+    r.status === 200 ? (r.data.total ?? 0) === 0 : r.status === 403, JSON.stringify(r.data.total ?? r.status));
+  r = await sa.req('DELETE', `/api/users/${dUserId}`);
+  check('decomm: cleanup complete', r.status === 200, JSON.stringify(r.data));
+}
+
 // Flat-model cleanup: project deletion no longer cascades people, so remove
 // every org member this run introduced (roster snapshot taken at suite start).
 {

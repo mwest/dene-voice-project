@@ -3412,6 +3412,7 @@ async function renderOrgsAdmin() {
                 <button class="ghost small" data-org-rename="${o.id}" data-name="${esc(o.name)}">Rename</button>
                 <button class="ghost small" data-app-toggle="${o.id}" data-status="${o.language_status}" data-name="${esc(o.name)}">
                   ${o.language_status === 'enabled' ? 'Disable Language' : 'Enable Language'}</button>
+                <button class="danger small" data-org-delete="${o.id}" data-name="${esc(o.name)}">Delete</button>
               </td>
             </tr>`).join('')}
         </tbody>
@@ -3488,6 +3489,24 @@ async function renderOrgsAdmin() {
         await api(`/orgs/${ren.dataset.orgRename}`, { method: 'PATCH', body: { name: name.trim() } });
         toast('Organization renamed');
         await loadMe(); // the org switcher may show the new name
+        renderTopbar();
+        renderOrgsAdmin();
+      } catch (err) { toast(err.message, true); }
+      return;
+    }
+    const del = e.target.closest('button[data-org-delete]');
+    if (del) {
+      const typed = prompt(
+        `This permanently deletes "${del.dataset.name}" and its ENTIRE collection — every campaign, entry, recording, document, and speaker. This cannot be undone.\n\nType the organization name exactly to confirm:`);
+      if (typed === null) return;
+      if (typed !== del.dataset.name) { toast('Name did not match — nothing was deleted', true); return; }
+      try {
+        const r = await api(`/orgs/${del.dataset.orgDelete}`, { method: 'DELETE', body: { confirm_name: typed } });
+        const d = r.deleted;
+        toast(d
+          ? `Organization deleted — ${d.entries} entries, ${d.recordings} recordings, ${d.documents} documents removed`
+          : 'Organization deleted');
+        await loadMe();
         renderTopbar();
         renderOrgsAdmin();
       } catch (err) { toast(err.message, true); }
