@@ -91,6 +91,7 @@ main { max-width: 780px; margin: 0 auto; padding: 1.5rem 1.2rem 4rem; }
   background: var(--accent-soft); color: var(--accent-dark);
 }
 .badge.audio { background: #e7efe8; color: #3c7a4e; }
+.badge.cat { background: none; border: 1px solid var(--line); color: var(--muted); font-weight: 600; }
 .badge.kind { background: none; padding: 0; color: var(--muted); font-size: 0.85rem; }
 
 .pager { display: flex; gap: 0.8rem; align-items: center; justify-content: center; margin: 1.4rem 0; }

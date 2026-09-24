@@ -58,6 +58,7 @@ const entryRow = (e) => `
       <span class="dene" lang="den">${esc(e.dene_text) || '—'}</span>
       <span class="english">${esc(e.english_text) || ''}</span>
       <span class="row-meta">
+        ${e.category ? `<span class="badge cat">${esc(e.category)}</span>` : ''}
         <span class="badge">${e.kind === 'phrase' ? 'Phrase' : 'Word'}</span>
         ${e.recording_count ? `<span class="badge audio" aria-label="${e.recording_count} recordings">🔊 ${e.recording_count}</span>` : ''}
       </span>
