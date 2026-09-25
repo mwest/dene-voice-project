@@ -181,6 +181,25 @@ publicLanguage.get('/entries/:uid', limit('entries', 600, 5 * 60 * 1000), (req, 
     duration_seconds: a.duration_seconds,
     audio_url: `/api/public/language/recordings/${a.uid}/audio`,
   }));
+  // Word ↔ example-phrase relationship, PUBLIC side: the linked entry appears
+  // only when it is publicly eligible itself — an unpublished phrase (or word)
+  // never leaks through a published counterpart.
+  const example = entry.kind === 'word'
+    ? db.prepare(
+        `SELECT e.uid, e.dene_text, e.english_text FROM entry_examples x
+         JOIN entries e ON e.id = x.phrase_entry_id
+         WHERE x.word_entry_id = ? AND ${PUBLIC_ENTRY}
+         ORDER BY x.position, x.created_at, e.id LIMIT 1`
+      ).get(entry.id, req.corpusId) ?? null
+    : undefined;
+  const exampleFor = entry.kind === 'phrase'
+    ? db.prepare(
+        `SELECT e.uid, e.dene_text, e.english_text FROM entry_examples x
+         JOIN entries e ON e.id = x.word_entry_id
+         WHERE x.phrase_entry_id = ? AND ${PUBLIC_ENTRY}
+         ORDER BY e.dene_text COLLATE NOCASE, e.id`
+      ).all(entry.id, req.corpusId)
+    : undefined;
   res.set('Cache-Control', JSON_CACHE);
   res.json({
     uid: entry.uid,
@@ -189,6 +208,8 @@ publicLanguage.get('/entries/:uid', limit('entries', 600, 5 * 60 * 1000), (req, 
     english_text: entry.english_text,
     category: entry.category,
     recordings,
+    ...(example !== undefined ? { example } : {}),
+    ...(exampleFor !== undefined ? { example_for: exampleFor } : {}),
   });
 });
 

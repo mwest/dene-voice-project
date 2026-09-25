@@ -2702,6 +2702,28 @@ if (BASE.includes('localhost')) {
     r.status === 200 && r.data.recordings.length === 1 && r.data.recordings[0].uid === r1b.uid,
     JSON.stringify(r.data.recordings));
 
+  // Example sentences on the public surface: the linked entry appears only
+  // when it is publicly eligible ITSELF.
+  r = await powner.req('PUT', `/api/entries/${e1.id}/example`, { dene_text: 'Łue nezų', english_text: 'The fish is good' });
+  const exPhrase = r.data.example;
+  r = await pub(`/entries/${e1.uid}`);
+  check('public: an unpublished example phrase never shows on a published word',
+    r.status === 200 && r.data.example === null, JSON.stringify(r.data.example));
+  publishEntry(exPhrase.id);
+  r = await pub(`/entries/${e1.uid}`);
+  check('public: published example appears on the word with its uid',
+    r.data.example?.uid && r.data.example.dene_text === 'Łue nezų', JSON.stringify(r.data.example));
+  r = await pub(`/entries/${r.data.example.uid}`);
+  check('public: the phrase page links back to its published word',
+    r.status === 200 && r.data.example_for?.length === 1 && r.data.example_for[0].uid === e1.uid,
+    JSON.stringify(r.data.example_for));
+  publishEntry(e1.id, false);
+  r = await pub(`/entries/${exPhrase.uid}`);
+  check('public: an unpublished word drops out of the phrase\'s example_for',
+    r.status === 200 && r.data.example_for.length === 0, JSON.stringify(r.data.example_for));
+  publishEntry(e1.id);
+  await powner.req('DELETE', `/api/entries/${exPhrase.id}`); // fixture done — keep org A's cleanup exact
+
   // §6 deliberate speaker attribution.
   const spk = db.prepare('SELECT speaker_id FROM audio_files WHERE id = ?').get(r1b.id).speaker_id;
   db.prepare(`UPDATE speakers SET public_display_name = 'Jane M.', public_attribution_enabled = 1 WHERE id = ?`).run(spk);
@@ -3157,6 +3179,109 @@ if (BASE.includes('localhost')) {
   } catch (e) {
     check('language-abstraction block ran', false, e.stack || e.message);
   }
+}
+
+// --- word ↔ example-phrase relationship (entry_examples) ---
+{
+  // Fresh campaign on the default collection (the suite's main project is
+  // deleted by this point; claims and imports need a campaign).
+  r = await sa.req('POST', '/api/projects', { name: `Example Sentences ${Date.now()}` });
+  const exProj = r.data.id;
+  const exProjName = r.data.name;
+  const mk = async (kind, dene, english) =>
+    (await sa.req('POST', '/api/entries', { kind, project_id: exProj, dene_text: dene, english_text: english })).data;
+  const w1 = await mk('word', 'łue', 'fish');
+  const w2 = await mk('word', 'tu', 'water');
+
+  // Setting texts creates a phrase entry and links it.
+  r = await sa.req('PUT', `/api/entries/${w1.id}/example`, { dene_text: 'Łue nezų', english_text: 'The fish is good' });
+  check('ex: saving texts creates and links a phrase', r.status === 200 &&
+    r.data.example?.dene_text === 'Łue nezų', JSON.stringify(r.data));
+  const p1 = r.data.example;
+  r = await sa.req('GET', `/api/entries/${p1.id}`);
+  check('ex: the example is a real phrase entry', r.status === 200 && r.data.kind === 'phrase');
+  check('ex: the phrase knows which word it exemplifies',
+    r.data.example_for?.length === 1 && r.data.example_for[0].id === w1.id, JSON.stringify(r.data.example_for));
+  r = await sa.req('GET', `/api/entries/${w1.id}`);
+  check('ex: word detail carries its example', r.data.example?.id === p1.id, JSON.stringify(r.data.example));
+
+  // Editing the field edits the SAME phrase (no orphan copies).
+  r = await sa.req('PUT', `/api/entries/${w1.id}/example`, { dene_text: 'Łue nezų cho', english_text: 'The fish is very good' });
+  check('ex: editing updates the linked phrase in place',
+    r.data.example?.id === p1.id && r.data.example.dene_text === 'Łue nezų cho', JSON.stringify(r.data.example));
+
+  // Many-to-many: the same phrase can exemplify a second word.
+  r = await sa.req('PUT', `/api/entries/${w2.id}/example`, { phrase_id: p1.id });
+  check('ex: same phrase links to a second word (many-to-many)', r.status === 200 && r.data.example?.id === p1.id);
+  r = await sa.req('GET', `/api/entries/${p1.id}`);
+  check('ex: phrase lists both words', r.data.example_for?.length === 2, JSON.stringify(r.data.example_for));
+
+  // Kind rules.
+  r = await sa.req('PUT', `/api/entries/${p1.id}/example`, { dene_text: 'x', english_text: 'y' });
+  check('ex: a phrase cannot carry an example', r.status === 400, r.status);
+  r = await sa.req('PUT', `/api/entries/${w1.id}/example`, { phrase_id: w2.id });
+  check('ex: a word cannot BE an example', r.status === 400, r.status);
+
+  // Translation claim on an incomplete example phrase carries its words as context.
+  const w3 = await mk('word', 'sah', 'bear');
+  r = await sa.req('PUT', `/api/entries/${w3.id}/example`, { dene_text: 'Sah cho hılı̨', english_text: '' });
+  const p2 = r.data.example;
+  {
+    // limit 1: p2 is the corpus's newest incomplete entry, so it is the sole
+    // claim — its work item cascades away when p2 is deleted below, keeping
+    // the campaign deletable.
+    const cl = await sa.req('POST', `/api/projects/${exProj}/work/claim`, { type: 'translation', limit: 1 });
+    const item = cl.data.items.find((i) => i.entry.id === p2.id);
+    check('ex: claimed example phrase carries example_for context',
+      !!item && item.example_for?.length === 1 && item.example_for[0].dene_text === 'sah',
+      JSON.stringify(cl.data.items.map((i) => [i.entry.id, i.example_for])));
+    for (const i of cl.data.items) await sa.req('POST', `/api/work/${i.work_item_id}/release`);
+  }
+
+  // Unlink keeps the phrase; deleting either endpoint spares the other.
+  r = await sa.req('DELETE', `/api/entries/${w2.id}/example`);
+  check('ex: unlink leaves the phrase intact', r.status === 200 && r.data.example === null &&
+    (await sa.req('GET', `/api/entries/${p1.id}`)).status === 200);
+  await sa.req('DELETE', `/api/entries/${w1.id}`);
+  r = await sa.req('GET', `/api/entries/${p1.id}`);
+  check('ex: deleting the word keeps the phrase', r.status === 200 && r.data.example_for.length === 0);
+  await sa.req('DELETE', `/api/entries/${p1.id}`);
+  r = await sa.req('GET', `/api/entries/${w2.id}`);
+  check('ex: deleting the phrase keeps the word, example gone', r.status === 200 && r.data.example === null);
+
+  // Import: English Word, Dene Word, Category, Dene/English Example Sentence.
+  const exCsv = [
+    'English Word,Dene Word,Category,Dene Example Sentence,English Example Sentence',
+    'beaver,tsá,animals,Tsá tu yı́le,The beaver is in the water',
+    'rock,kwe,land,,',
+  ].join('\n');
+  let fdx = new FormData();
+  fdx.append('file', new Blob([exCsv], { type: 'text/csv' }), 'examples.csv');
+  r = await sa.req('POST', `/api/projects/${exProj}/import`, fdx, true);
+  check('ex: import creates words and links example sentences',
+    r.status === 200 && r.data.imported === 2 && r.data.examples_linked === 1, JSON.stringify(r.data));
+  r = await sa.req('GET', `/api/entries?q=${encodeURIComponent('tsá')}&kind=word`);
+  const beaver = r.data.entries.find((e) => e.dene_text === 'tsá');
+  r = await sa.req('GET', `/api/entries/${beaver.id}`);
+  check('ex: imported word carries its example phrase',
+    r.data.example?.dene_text === 'Tsá tu yı́le' && r.data.example?.english_text === 'The beaver is in the water',
+    JSON.stringify(r.data.example));
+  const beaverExample = r.data.example;
+  fdx = new FormData();
+  fdx.append('file', new Blob([exCsv], { type: 'text/csv' }), 'examples.csv');
+  r = await sa.req('POST', `/api/projects/${exProj}/import`, fdx, true);
+  check('ex: re-import is idempotent (no new entries or links)',
+    r.data.imported === 0 && r.data.examples_linked === 0, JSON.stringify(r.data));
+
+  // Cleanup: the imported/linked fixtures (word w2/w3, p2, import rows).
+  for (const id of [w2.id, w3.id, p2.id, beaver.id, beaverExample.id]) {
+    await sa.req('DELETE', `/api/entries/${id}`);
+  }
+  r = await sa.req('GET', `/api/entries?q=kwe&kind=word`);
+  const kwe = r.data.entries.find((e) => e.dene_text === 'kwe');
+  if (kwe) await sa.req('DELETE', `/api/entries/${kwe.id}`);
+  r = await sa.req('DELETE', `/api/projects/${exProj}`, { confirm_name: exProjName });
+  check('ex: cleanup complete', r.status === 200, JSON.stringify(r.data));
 }
 
 // --- superadmin org decommission: delete an organization WITH its content ---

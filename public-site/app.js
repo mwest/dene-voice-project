@@ -202,6 +202,17 @@ async function renderEntry(uid) {
       <p class="badge kind">${e.kind === 'phrase' ? 'Phrase' : 'Word'}${e.category ? ` · ${esc(e.category)}` : ''}</p>
       <h2 class="dene" lang="den">${esc(e.dene_text) || '—'}</h2>
       <p class="english-big">${esc(e.english_text)}</p>
+      ${e.example ? `
+      <section class="example" aria-labelledby="ex-head">
+        <h3 id="ex-head">Example sentence</h3>
+        <a class="example-box" href="/entry/${esc(e.example.uid)}">
+          <span class="dene" lang="den">${esc(e.example.dene_text) || '—'}</span>
+          <span class="english">${esc(e.example.english_text)}</span>
+        </a>
+      </section>` : ''}
+      ${(e.example_for ?? []).length ? `
+      <p class="muted example-for">Example sentence for: ${e.example_for.map((w) =>
+        `<a href="/entry/${esc(w.uid)}" class="dene" lang="den">${esc(w.dene_text || w.english_text)}</a>`).join(', ')}</p>` : ''}
       <section aria-labelledby="rec-head">
         <h3 id="rec-head">Recordings</h3>
         ${e.recordings.length ? `

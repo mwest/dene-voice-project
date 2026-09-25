@@ -99,6 +99,14 @@ main { max-width: 780px; margin: 0 auto; padding: 1.5rem 1.2rem 4rem; }
 .entry-detail { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 1.6rem; }
 .entry-detail h2.dene { font-size: 2.2rem; margin: 0.2rem 0; overflow-wrap: anywhere; }
 .english-big { font-size: 1.25rem; margin: 0.2rem 0 1rem; color: var(--ink); }
+.example h3 { margin: 1rem 0 0.4rem; font-size: 1rem; }
+.example-box {
+  display: flex; flex-direction: column; gap: 0.15rem; text-decoration: none; color: inherit;
+  background: var(--accent-soft); border-radius: 10px; padding: 0.7rem 0.9rem;
+}
+.example-box .dene { font-weight: 600; font-size: 1.05rem; }
+.example-box .english { color: var(--muted); font-size: 0.95rem; }
+.example-for { margin-top: 1rem; font-size: 0.9rem; }
 .recording-list { list-style: none; padding: 0; margin: 0.6rem 0; }
 .recording { display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap; padding: 0.5rem 0; }
 .recording audio { max-width: 100%; }

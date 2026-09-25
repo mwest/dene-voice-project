@@ -2144,6 +2144,40 @@ const canEditEntry = (req) =>
   req.projectRole === 'admin' ||
   (req.projectRole === 'member' && req.entry.created_by === req.user.id);
 
+// Word ↔ example-phrase relationship (entry_examples, migration 013). The
+// data model is many-to-many; the UI is flat: a word's PRIMARY example is the
+// link with the lowest position (oldest first as the tiebreak).
+const primaryExampleFor = (wordId) =>
+  db.prepare(
+    `SELECT e.id, e.uid, e.dene_text, e.english_text FROM entry_examples x
+     JOIN entries e ON e.id = x.phrase_entry_id
+     WHERE x.word_entry_id = ? ORDER BY x.position, x.created_at, e.id LIMIT 1`
+  ).get(wordId) ?? null;
+
+const exampleForWords = (phraseId) =>
+  db.prepare(
+    `SELECT e.id, e.uid, e.dene_text, e.english_text FROM entry_examples x
+     JOIN entries e ON e.id = x.word_entry_id
+     WHERE x.phrase_entry_id = ? ORDER BY e.dene_text COLLATE NOCASE, e.id`
+  ).all(phraseId);
+
+/** Find (by exact texts, corpus + kind scoped) or create a phrase entry —
+ *  shared by the example endpoint and the CSV import. Returns the phrase id. */
+function findOrCreatePhrase(word, dene, english, userId, sourceDoc = null) {
+  const existing = db.prepare(
+    `SELECT id FROM entries WHERE corpus_id = ? AND kind = 'phrase'
+     AND dene_text = ? AND english_text = ?`
+  ).get(word.corpus_id, dene, english);
+  if (existing) return existing.id;
+  const row = db.prepare(
+    `INSERT INTO entries (uid, project_id, corpus_id, kind, dene_text, english_text, source_doc, created_by, updated_by)
+     VALUES (?, ?, ?, 'phrase', ?, ?, ?, ?, ?)`
+  ).run(uuidv7(), word.project_id, word.corpus_id, dene, english, sourceDoc, userId, userId);
+  syncEntryTexts(db, row.lastInsertRowid, userId);
+  storeEmbedding(row.lastInsertRowid, english);
+  return row.lastInsertRowid;
+}
+
 // Best-effort: (re)compute the English embedding for an entry in the background.
 // Never blocks or fails the request; the backfill script catches any misses.
 function storeEmbedding(entryId, english) {
@@ -2260,7 +2294,67 @@ language.get('/entries/:id', loadEntry, (req, res) => {
     };
   }
   res.json({ ...req.entry, audio, sources, can_edit: canEditEntry(req), role: req.projectRole,
+    ...(req.entry.kind === 'word' ? { example: primaryExampleFor(req.entry.id) } : {}),
+    ...(req.entry.kind === 'phrase' ? { example_for: exampleForWords(req.entry.id) } : {}),
     ...(publication ? { publication } : {}) });
+});
+
+// Set or replace a word's PRIMARY example sentence (flat UI over the
+// many-to-many entry_examples table — other links are left alone).
+// Body: { phrase_id } links an existing phrase; { dene_text, english_text }
+// edits the linked phrase in place, or finds/creates one and links it.
+language.put('/entries/:id/example', loadEntry, rejectTranslators, (req, res) => {
+  if (!canEditEntry(req)) return bad(res, 'You can only edit your own entries', 403);
+  if (req.entry.kind !== 'word') return bad(res, 'Only words carry an example sentence');
+  const current = primaryExampleFor(req.entry.id);
+  let phraseId;
+
+  if (req.body?.phrase_id !== undefined) {
+    const phrase = db.prepare('SELECT * FROM entries WHERE id = ?').get(Number(req.body.phrase_id));
+    if (!phrase || phrase.corpus_id !== req.entry.corpus_id) return bad(res, 'Phrase not found', 404);
+    if (phrase.kind !== 'phrase') return bad(res, 'The example must be a phrase entry');
+    if (phrase.id === req.entry.id) return bad(res, 'An entry cannot be its own example');
+    phraseId = phrase.id;
+  } else {
+    const dene = String(req.body?.dene_text ?? '').trim();
+    const english = String(req.body?.english_text ?? '').trim();
+    if (!dene && !english) return bad(res, 'Provide the example in Dene and/or English');
+    if (current) {
+      // Flat semantics: editing the field edits THE word's example phrase.
+      // (A shared phrase changes everywhere — it is the same sentence.)
+      const phrase = db.prepare('SELECT * FROM entries WHERE id = ?').get(current.id);
+      applyTranslation(phrase, dene, english, req.user.id);
+      phraseId = phrase.id;
+    } else {
+      phraseId = findOrCreatePhrase(req.entry, dene, english, req.user.id);
+    }
+  }
+
+  db.transaction(() => {
+    if (current && current.id !== phraseId) {
+      db.prepare('DELETE FROM entry_examples WHERE word_entry_id = ? AND phrase_entry_id = ?')
+        .run(req.entry.id, current.id);
+    }
+    db.prepare(
+      `INSERT INTO entry_examples (word_entry_id, phrase_entry_id, position, created_by)
+       VALUES (?, ?, 0, ?)
+       ON CONFLICT(word_entry_id, phrase_entry_id) DO UPDATE SET position = 0`
+    ).run(req.entry.id, phraseId, req.user.id);
+  })();
+  res.json({ ok: true, example: primaryExampleFor(req.entry.id) });
+});
+
+// Unlink the word's primary example. The phrase itself survives — it is
+// corpus content, not an attribute of the word.
+language.delete('/entries/:id/example', loadEntry, rejectTranslators, (req, res) => {
+  if (!canEditEntry(req)) return bad(res, 'You can only edit your own entries', 403);
+  if (req.entry.kind !== 'word') return bad(res, 'Only words carry an example sentence');
+  const current = primaryExampleFor(req.entry.id);
+  if (current) {
+    db.prepare('DELETE FROM entry_examples WHERE word_entry_id = ? AND phrase_entry_id = ?')
+      .run(req.entry.id, current.id);
+  }
+  res.json({ ok: true, example: primaryExampleFor(req.entry.id) });
 });
 
 language.patch('/entries/:id', loadEntry, (req, res) => {
@@ -2957,6 +3051,11 @@ language.post('/projects/:id/work/claim', (req, res) => {
   const out = items.map((i) => ({
     work_item_id: i.id, type: i.type, language: i.language,
     lease_expires_at: i.lease_expires_at, entry: byId.get(i.entry_id),
+    // Context for the contributor: which word(s) this phrase is the example
+    // sentence for (helps translate and record it faithfully).
+    ...(byId.get(i.entry_id)?.kind === 'phrase'
+      ? { example_for: exampleForWords(i.entry_id).map((w) => ({ dene_text: w.dene_text, english_text: w.english_text })) }
+      : {}),
   }));
   res.json({ items: out });
 });
@@ -3498,10 +3597,15 @@ language.post('/projects/:id/import', requireOrgAdminOfProject, (req, res, next)
 
   // Find the Dene and English columns from the header row; if there is no
   // recognizable header, assume column 1 = Dene, column 2 = English.
+  // Optional example-sentence columns ("Dene Example Sentence" /
+  // "English Example Sentence") are matched FIRST so the plain word columns
+  // never bind to them, whatever the column order.
   const norm = (s) => String(s).toLowerCase().replace(/[^a-z]/g, '');
   const header = rows[0].map(norm);
-  let deneIdx = header.findIndex((h) => h.includes('dene'));
-  let engIdx = header.findIndex((h) => h.includes('english') || h === 'eng');
+  const exDeneIdx = header.findIndex((h) => h.includes('example') && h.includes('dene'));
+  const exEngIdx = header.findIndex((h) => h.includes('example') && (h.includes('english') || h.includes('eng')));
+  let deneIdx = header.findIndex((h, i) => h.includes('dene') && i !== exDeneIdx);
+  let engIdx = header.findIndex((h, i) => (h.includes('english') || h === 'eng') && i !== exEngIdx);
   let catIdx = header.findIndex((h) => h.includes('categor'));
   let dataRows;
   if (deneIdx >= 0 || engIdx >= 0) {
@@ -3542,6 +3646,15 @@ language.post('/projects/:id/import', requireOrgAdminOfProject, (req, res, next)
   let imported = 0;
   let skippedDuplicates = 0;
   let skippedInvalid = 0;
+  let examplesLinked = 0;
+  // Example columns apply to WORD imports only: the sentence becomes (or
+  // reuses) a phrase entry in the corpus, linked as the word's example. A
+  // duplicate word row still gets its example linked, so re-importing a file
+  // that gained example columns backfills the links idempotently.
+  const wantExamples = kind === 'word' && (exDeneIdx >= 0 || exEngIdx >= 0) && project.corpus_id;
+  const findWord = project.corpus_id
+    ? db.prepare(`SELECT id, project_id, corpus_id FROM entries WHERE corpus_id = ? AND kind = 'word' AND dene_text = ? AND english_text = ?`)
+    : null;
   db.transaction(() => {
     for (const r of dataRows) {
       const dene = (deneIdx >= 0 ? r[deneIdx] ?? '' : '').trim();
@@ -3551,11 +3664,30 @@ language.post('/projects/:id/import', requireOrgAdminOfProject, (req, res, next)
       // stored as '' and the entry is queued for translation.
       if (!dene && !english) { skippedInvalid++; continue; }
       const key = JSON.stringify([dene, english]);
-      if (seen.has(key)) { skippedDuplicates++; continue; }
-      seen.add(key);
-      const row = insert.run(uuidv7(), project.id, project.corpus_id, kind, dene, english, category, sourceDoc, req.user.id, req.user.id);
-      syncEntryTexts(db, row.lastInsertRowid, req.user.id);
-      imported++;
+      let wordId = null;
+      if (seen.has(key)) {
+        skippedDuplicates++;
+        if (wantExamples) wordId = findWord.get(project.corpus_id, dene, english)?.id ?? null;
+      } else {
+        seen.add(key);
+        const row = insert.run(uuidv7(), project.id, project.corpus_id, kind, dene, english, category, sourceDoc, req.user.id, req.user.id);
+        syncEntryTexts(db, row.lastInsertRowid, req.user.id);
+        imported++;
+        wordId = row.lastInsertRowid;
+      }
+      if (wantExamples && wordId) {
+        const exDene = (exDeneIdx >= 0 ? r[exDeneIdx] ?? '' : '').trim();
+        const exEng = (exEngIdx >= 0 ? r[exEngIdx] ?? '' : '').trim();
+        if (exDene || exEng) {
+          const phraseId = findOrCreatePhrase(
+            { project_id: project.id, corpus_id: project.corpus_id }, exDene, exEng, req.user.id, sourceDoc);
+          const linked = db.prepare(
+            `INSERT OR IGNORE INTO entry_examples (word_entry_id, phrase_entry_id, position, created_by)
+             VALUES (?, ?, 0, ?)`
+          ).run(wordId, phraseId, req.user.id);
+          if (linked.changes) examplesLinked++;
+        }
+      }
     }
   })();
 
@@ -3571,6 +3703,7 @@ language.post('/projects/:id/import', requireOrgAdminOfProject, (req, res, next)
     imported,
     skipped_duplicates: skippedDuplicates,
     skipped_invalid: skippedInvalid,
+    examples_linked: examplesLinked,
     total_rows: dataRows.length,
   });
 });

@@ -1414,6 +1414,9 @@ async function renderEntryDetail(id) {
             <span>source: ${entry.role === 'translator' ? esc(s.title) : `<a href="#/documents/${s.document_id}">${esc(s.title)}</a>`}${
               s.location?.sheet ? ` — ${esc(s.location.sheet)}, row ${s.location.row}`
               : s.location?.row ? ` — row ${s.location.row}` : ''}</span>`).join('')}
+          ${(entry.example_for ?? []).length ? `
+            <span>example sentence for: ${entry.example_for.map((w) =>
+              `<a href="#/entries/${w.id}" class="dene" lang="den">${esc(w.dene_text || w.english_text)}</a>`).join(', ')}</span>` : ''}
         </div>
         <div class="entry-texts">
           <label class="field"><span>${isPhrase ? 'Dene phrase' : 'Dene text'}</span>
@@ -1442,6 +1445,28 @@ async function renderEntryDetail(id) {
         </div>`}
       </form>
     </div>
+
+    ${isPhrase ? '' : `
+    <div class="card">
+      <h2 style="margin-top:0">Example sentence</h2>
+      <form id="example-form">
+        <div class="entry-texts">
+          <label class="field"><span>Dene</span>
+            <textarea name="dene_text" class="dene" lang="den" spellcheck="false" ${ro ? 'readonly' : ''}
+              placeholder="e.g. a sentence using this word">${esc(entry.example?.dene_text ?? '')}</textarea></label>
+          <label class="field"><span>English</span>
+            <textarea name="english_text" ${ro ? 'readonly' : ''}>${esc(entry.example?.english_text ?? '')}</textarea></label>
+        </div>
+        <p class="form-hint" style="margin-top:0.4rem">The example is a phrase entry of its own${
+          entry.example ? ` — <a href="#/entries/${entry.example.id}">open it</a> to record or manage it` : ', created when you save'}.</p>
+        <p class="error-msg" hidden></p>
+        ${ro ? '' : `
+        <div class="form-actions">
+          <button type="submit">Save example</button>
+          ${entry.example ? '<button type="button" class="ghost" id="example-unlink">Remove link</button>' : ''}
+        </div>`}
+      </form>
+    </div>`}
 
     ${recordingsCard}
     ${entry.publication ? `
@@ -1504,6 +1529,33 @@ async function renderEntryDetail(id) {
       toast(isPhrase ? 'Phrase saved' : 'Entry saved');
       renderEntryDetail(entry.id);
     } catch (err) { showFormError(f, err.message); }
+  });
+
+  $('#example-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (ro) return;
+    const f = e.target;
+    if (!f.dene_text.value.trim() && !f.english_text.value.trim()) {
+      showFormError(f, 'Enter the example in Dene, English, or both');
+      return;
+    }
+    try {
+      await api(`/entries/${entry.id}/example`, {
+        method: 'PUT',
+        body: { dene_text: f.dene_text.value, english_text: f.english_text.value },
+      });
+      toast('Example sentence saved');
+      renderEntryDetail(entry.id);
+    } catch (err) { showFormError(f, err.message); }
+  });
+
+  $('#example-unlink')?.addEventListener('click', async () => {
+    if (!confirm('Remove the link to this example sentence? The phrase entry itself is kept.')) return;
+    try {
+      await api(`/entries/${entry.id}/example`, { method: 'DELETE' });
+      toast('Example link removed');
+      renderEntryDetail(entry.id);
+    } catch (err) { toast(err.message, true); }
   });
 
   $('#delete-entry')?.addEventListener('click', async () => {
@@ -2185,7 +2237,7 @@ async function renderTranslateSession() {
   try {
     data = await api(`/projects/${p.id}/work/claim`, { method: 'POST', body: { type: 'translation', limit: 20 } });
   } catch (err) { view.innerHTML = `<div class="empty">${esc(err.message)}</div>`; return; }
-  transSession.queue = data.items.map((i) => ({ ...i.entry, _wi: i.work_item_id }));
+  transSession.queue = data.items.map((i) => ({ ...i.entry, _wi: i.work_item_id, _exampleFor: i.example_for ?? [] }));
   transSession.pos = 0;
   transSession.total = transSession.queue.length;
   transSession.claimed = transSession.queue.map((e) => e._wi);
@@ -2217,6 +2269,8 @@ function renderTranslateCard() {
           <p class="error-msg" hidden></p>
           <div class="rec-meta" style="border-top:1px solid var(--line);padding-top:0.8rem;align-items:flex-start">
             ${badges ? `<div>${badges}</div>` : ''}
+            ${(entry._exampleFor ?? []).length ? `<div>Example sentence for: ${entry._exampleFor.map((w) =>
+              `<b class="dene" lang="den">${esc(w.dene_text || w.english_text)}</b>${w.english_text && w.dene_text ? ` (${esc(w.english_text)})` : ''}`).join(', ')}</div>` : ''}
             ${entry.source_doc ? `<div>Source: ${esc(entry.source_doc)}</div>` : ''}
             ${entry.notes ? `<div>Notes: ${esc(entry.notes)}</div>` : ''}
             <div>Added by ${esc(entry.created_by_name)} · ${fmtDate(entry.created_at)}</div>
