@@ -9,6 +9,8 @@ primary_region = "yyz"   # Toronto: keeps data in Canada
 [env]
   NODE_ENV = "production"
   PORT = "8080"
+  # The public-sites portal is served on these hosts (comma-separated).
+  PORTAL_HOSTS = "denekede.ca"
 
 [http_service]
   internal_port = 8080

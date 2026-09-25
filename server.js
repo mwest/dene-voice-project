@@ -6,6 +6,7 @@ import db from './src/db.js';
 import { platform, language } from './src/api.js';
 import { publicLanguage } from './src/apps/language/public/api.js';
 import { publicSiteHandler } from './src/apps/language/public/site.js';
+import { portalHandler } from './src/apps/language/public/portal.js';
 import { COOKIE_NAME, userForToken } from './src/auth.js';
 import { APP_URL } from './src/mail.js';
 import { backfillEmbeddings } from './scripts/embed-backfill.js';
@@ -50,9 +51,15 @@ app.use('/api/platform', platform);
 app.use('/api/language', language);
 app.use('/api/public/language', publicLanguage);
 
+// The portal: a directory of every public Language site, on the host(s) in
+// PORTAL_HOSTS (e.g. denekede.ca). Mounted BEFORE the per-site handler so the
+// portal owns its host even if an organization's site still claims the same
+// domain in its settings.
+app.use(portalHandler);
+
 // The public Language site, served on its configured domain(s) — e.g.
-// denekede.ca (public-site spec phase D/E). Requests on those hosts get the
-// public shell/assets/sitemap; every other host falls through untouched.
+// shuhtaotine.denekede.ca (public-site spec phase D/E). Requests on those
+// hosts get the public shell/assets/sitemap; every other host falls through.
 app.use(publicSiteHandler);
 
 // Product root: THE sign-in page lives here. A signed-in visitor is forwarded
