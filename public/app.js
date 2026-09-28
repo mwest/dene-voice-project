@@ -2916,6 +2916,10 @@ async function showCreateEntriesWizard(d) {
   };
   const guess = (h) => {
     const s = h.toLowerCase();
+    if (/example|sentence/.test(s)) {
+      if (/english/.test(s)) return 'example_english';
+      if (/dene|slavey|tł|indigenous/.test(s)) return 'example_dene';
+    }
     if (/dene|slavey|tł|indigenous|word|phrase/.test(s) && !/english/.test(s)) return 'dene';
     if (/english|meaning|translation|gloss/.test(s)) return 'english';
     if (/categor|topic|tag/.test(s)) return 'category';
@@ -2957,8 +2961,12 @@ async function showCreateEntriesWizard(d) {
             <option value="english" ${guess(h) === 'english' ? 'selected' : ''}>English text</option>
             <option value="category" ${guess(h) === 'category' ? 'selected' : ''}>Category</option>
             <option value="notes" ${guess(h) === 'notes' ? 'selected' : ''}>Notes</option>
+            <option value="example_dene" ${guess(h) === 'example_dene' ? 'selected' : ''}>Dene example sentence</option>
+            <option value="example_english" ${guess(h) === 'example_english' ? 'selected' : ''}>English example sentence</option>
           </select>
-        </label>`).join('')}`;
+        </label>`).join('')}
+      <p class="form-hint" style="margin-top:0.3rem">Example sentences apply to dictionary words: each becomes
+        a phrase entry of its own, linked as the word's example.</p>`;
   };
   renderMapping(headers);
   m.querySelector('[name=sheet]')?.addEventListener('change', async (e) => {
@@ -2980,23 +2988,30 @@ async function showCreateEntriesWizard(d) {
       showFormError($('#wizard-form', m), 'Map at least one column to Dene text or English text');
       return;
     }
+    const withExamples = Object.values(mapping).some((v) => v === 'example_dene' || v === 'example_english');
+    if (withExamples && $('#wizard-form', m).kind.value !== 'word') {
+      showFormError($('#wizard-form', m), 'Example sentences can only be imported with dictionary words');
+      return;
+    }
     const params = new URLSearchParams({ limit: 200 });
     if (state_.sheet) params.set('sheet', state_.sheet);
     const { blocks, total } = await api(`/documents/${d.id}/blocks?` + params);
     const mapped = blocks.map((b) => {
       const cells = JSON.parse(b.metadata_json ?? '{}').cells ?? {};
       const get = (f) => Object.entries(mapping).filter(([, v]) => v === f).map(([h]) => String(cells[h] ?? '').trim()).find(Boolean) ?? '';
-      return { row: b.row_number ?? b.ordinal, dene: get('dene'), english: get('english') };
+      return { row: b.row_number ?? b.ordinal, dene: get('dene'), english: get('english'),
+        example: [get('example_dene'), get('example_english')].filter(Boolean).join(' — ') };
     });
     const valid = mapped.filter((r) => r.dene || r.english);
     $('#wizard-preview', m).innerHTML = `
       <p style="font-weight:600;margin:0.4rem 0 0.2rem">Preview (first ${Math.min(20, valid.length)} of ~${total} rows · ${valid.length} usable in sample, ${mapped.length - valid.length} empty)</p>
       <div class="table-wrap" style="max-height:220px;overflow:auto"><table>
-        <thead><tr><th>Row</th><th>Dene</th><th>English</th></tr></thead>
+        <thead><tr><th>Row</th><th>Dene</th><th>English</th>${withExamples ? '<th>Example sentence</th>' : ''}</tr></thead>
         <tbody>${valid.slice(0, 20).map((r) => `
           <tr><td style="color:var(--muted)">${r.row}</td>
               <td class="dene" lang="den">${esc(r.dene) || '<i style="color:var(--muted)">— queued for translation —</i>'}</td>
-              <td>${esc(r.english) || '<i style="color:var(--muted)">— queued for translation —</i>'}</td></tr>`).join('')}
+              <td>${esc(r.english) || '<i style="color:var(--muted)">— queued for translation —</i>'}</td>${
+                withExamples ? `<td lang="den">${esc(r.example)}</td>` : ''}</tr>`).join('')}
         </tbody></table></div>`;
     $('#wizard-confirm', m).disabled = valid.length === 0;
   });
@@ -3018,7 +3033,8 @@ async function showCreateEntriesWizard(d) {
       closeModal();
       toast(`Created ${r.created} entr${r.created === 1 ? 'y' : 'ies'}`
         + (r.skipped_duplicates ? ` · ${r.skipped_duplicates} duplicates skipped` : '')
-        + (r.skipped_already_imported ? ` · ${r.skipped_already_imported} already imported` : ''));
+        + (r.skipped_already_imported ? ` · ${r.skipped_already_imported} already imported` : '')
+        + (r.examples_linked ? ` · ${r.examples_linked} example sentence${r.examples_linked === 1 ? '' : 's'} linked` : ''));
       refreshCorpora();
       renderDocumentDetail(d.id);
     } catch (err) {
@@ -3302,6 +3318,11 @@ function showImportModal(projectId, projectName) {
       imported — one-sided rows are queued for translation. Rows already in the
       project and duplicates within the file are skipped, so re-importing the same
       file is safe. Max 10,000 rows per file.</p>
+    <p style="color:var(--muted);font-size:0.9rem">
+      <b>Example sentences</b> (dictionary words only): add columns headed
+      <code>Dene Example Sentence</code> and/or <code>English Example Sentence</code>.
+      Each sentence becomes a phrase entry linked as the word's example; re-importing
+      a file adds missing links to words that are already there.</p>
     <form id="import-form">
       <label class="field"><span>Import as</span>
         <select name="kind">
@@ -3331,6 +3352,7 @@ function showImportModal(projectId, projectName) {
       const parts = [`Imported ${r.imported} entries`];
       if (r.skipped_duplicates) parts.push(`${r.skipped_duplicates} duplicates skipped`);
       if (r.skipped_invalid) parts.push(`${r.skipped_invalid} incomplete rows skipped`);
+      if (r.examples_linked) parts.push(`${r.examples_linked} example sentence${r.examples_linked === 1 ? '' : 's'} linked`);
       toast(parts.join(' · '));
       renderProjects();
     } catch (err) {

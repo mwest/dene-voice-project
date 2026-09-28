@@ -1390,11 +1390,18 @@ language.post('/documents/:id/create-entries', loadDocument({ upload: true }), (
     return bad(res, 'Entries can be created from spreadsheets (Excel/CSV) only');
   }
   const kind = req.body?.kind === 'phrase' ? 'phrase' : 'word';
-  const mapping = req.body?.mapping ?? {}; // { columnHeader: 'dene'|'english'|'category'|'notes' }
+  // { columnHeader: 'dene'|'english'|'category'|'notes'|'example_dene'|'example_english' }
+  const mapping = req.body?.mapping ?? {};
   const fields = Object.entries(mapping)
-    .filter(([, v]) => ['dene', 'english', 'category', 'notes'].includes(v));
+    .filter(([, v]) => ['dene', 'english', 'category', 'notes', 'example_dene', 'example_english'].includes(v));
   if (!fields.some(([, v]) => v === 'dene' || v === 'english')) {
     return bad(res, 'Map at least one column to Dene text or English text');
+  }
+  // Example sentences (entry_examples, migration 013) belong to words: each
+  // becomes (or reuses) a phrase entry linked as the word's example.
+  const wantExamples = fields.some(([, v]) => v === 'example_dene' || v === 'example_english');
+  if (wantExamples && kind !== 'word') {
+    return bad(res, 'Example sentences can only be imported with dictionary words');
   }
   const sheet = req.body?.sheet ? String(req.body.sheet) : null;
   const campaigns = db.prepare(`SELECT id FROM projects WHERE corpus_id = ? AND status <> 'closed'`)
@@ -1432,38 +1439,62 @@ language.post('/documents/:id/create-entries', loadDocument({ upload: true }), (
     `INSERT INTO entry_document_sources (entry_id, document_id, document_block_id, location_json)
      VALUES (?, ?, ?, ?)`
   );
-  let created = 0, dup = 0, empty = 0, already = 0;
+  // Rows that are already imported or duplicates still get their example
+  // linked, so re-running the import after mapping example columns backfills.
+  const sourceWord = db.prepare(
+    `SELECT s.entry_id FROM entry_document_sources s JOIN entries e ON e.id = s.entry_id
+     WHERE s.document_id = ? AND s.document_block_id = ? AND e.kind = 'word'`
+  );
+  const findWord = db.prepare(
+    `SELECT id FROM entries WHERE corpus_id = ? AND kind = 'word' AND dene_text = ? AND english_text = ?`
+  );
+  let created = 0, dup = 0, empty = 0, already = 0, examplesLinked = 0;
   db.transaction(() => {
     for (const b of blocks) {
-      if (linked.has(b.id)) { already++; continue; }
       const cells = b.metadata_json ? (JSON.parse(b.metadata_json).cells ?? {}) : {};
       const val = (field) => fields.filter(([, v]) => v === field)
         .map(([h]) => String(cells[h] ?? '').trim()).find(Boolean) ?? '';
-      const dene = val('dene');
-      const english = val('english');
-      // A row imports as long as EITHER side has text (one-sided entries are
-      // queued for translation, same as everywhere else).
-      if (!dene && !english) { empty++; continue; }
-      const key = JSON.stringify([dene, english]);
-      if (seen.has(key)) { dup++; continue; }
-      seen.add(key);
       const locator = `${b.sheet_name ? `${b.sheet_name}, ` : ''}row ${b.row_number ?? b.ordinal}`;
-      const entryId = insertEntry.run(uuidv7(), projectId, doc.corpus_id, kind, dene, english,
-        val('category') || null, val('notes') || null, `${doc.title} — ${locator}`,
-        req.user.id, req.user.id).lastInsertRowid;
-      syncEntryTexts(db, entryId, req.user.id);
-      insertSource.run(entryId, doc.id, b.id,
-        JSON.stringify({ sheet: b.sheet_name ?? null, row: b.row_number ?? null }));
-      created++;
+      let wordId = null;
+      if (linked.has(b.id)) {
+        already++;
+        if (wantExamples) wordId = sourceWord.get(doc.id, b.id)?.entry_id ?? null;
+      } else {
+        const dene = val('dene');
+        const english = val('english');
+        // A row imports as long as EITHER side has text (one-sided entries are
+        // queued for translation, same as everywhere else).
+        if (!dene && !english) { empty++; continue; }
+        const key = JSON.stringify([dene, english]);
+        if (seen.has(key)) {
+          dup++;
+          if (wantExamples) wordId = findWord.get(doc.corpus_id, dene, english)?.id ?? null;
+        } else {
+          seen.add(key);
+          const entryId = insertEntry.run(uuidv7(), projectId, doc.corpus_id, kind, dene, english,
+            val('category') || null, val('notes') || null, `${doc.title} — ${locator}`,
+            req.user.id, req.user.id).lastInsertRowid;
+          syncEntryTexts(db, entryId, req.user.id);
+          insertSource.run(entryId, doc.id, b.id,
+            JSON.stringify({ sheet: b.sheet_name ?? null, row: b.row_number ?? null }));
+          created++;
+          wordId = entryId;
+        }
+      }
+      if (wantExamples && wordId) {
+        const word = { id: wordId, project_id: projectId, corpus_id: doc.corpus_id };
+        if (linkImportedExample(word, val('example_dene'), val('example_english'), req.user.id,
+          `${doc.title} — ${locator}`)) examplesLinked++;
+      }
     }
   })();
   if (created > 0) {
     backfillEmbeddings((m) => console.log('[embed:documents]', m))
       .catch((e) => console.error('[embed:documents] backfill failed:', e.message));
   }
-  console.log(`[documents] created ${created} entries from ${doc.uid} (${dup} dups, ${empty} empty, ${already} already imported)`);
+  console.log(`[documents] created ${created} entries from ${doc.uid} (${dup} dups, ${empty} empty, ${already} already imported, ${examplesLinked} examples linked)`);
   res.json({ ok: true, created, skipped_duplicates: dup, skipped_empty: empty,
-    skipped_already_imported: already, project_id: projectId, kind });
+    skipped_already_imported: already, examples_linked: examplesLinked, project_id: projectId, kind });
 });
 
 language.get('/projects', (req, res) => {
@@ -2176,6 +2207,18 @@ function findOrCreatePhrase(word, dene, english, userId, sourceDoc = null) {
   syncEntryTexts(db, row.lastInsertRowid, userId);
   storeEmbedding(row.lastInsertRowid, english);
   return row.lastInsertRowid;
+}
+
+/** Import path (CSV and spreadsheet): find-or-create the example phrase and
+ *  link it to the word. INSERT OR IGNORE keeps re-imports idempotent. Returns
+ *  true when a new link was made. */
+function linkImportedExample(word, exDene, exEng, userId, sourceDoc) {
+  if (!exDene && !exEng) return false;
+  const phraseId = findOrCreatePhrase(word, exDene, exEng, userId, sourceDoc);
+  return db.prepare(
+    `INSERT OR IGNORE INTO entry_examples (word_entry_id, phrase_entry_id, position, created_by)
+     VALUES (?, ?, 0, ?)`
+  ).run(word.id, phraseId, userId).changes > 0;
 }
 
 // Best-effort: (re)compute the English embedding for an entry in the background.
@@ -3678,15 +3721,8 @@ language.post('/projects/:id/import', requireOrgAdminOfProject, (req, res, next)
       if (wantExamples && wordId) {
         const exDene = (exDeneIdx >= 0 ? r[exDeneIdx] ?? '' : '').trim();
         const exEng = (exEngIdx >= 0 ? r[exEngIdx] ?? '' : '').trim();
-        if (exDene || exEng) {
-          const phraseId = findOrCreatePhrase(
-            { project_id: project.id, corpus_id: project.corpus_id }, exDene, exEng, req.user.id, sourceDoc);
-          const linked = db.prepare(
-            `INSERT OR IGNORE INTO entry_examples (word_entry_id, phrase_entry_id, position, created_by)
-             VALUES (?, ?, 0, ?)`
-          ).run(wordId, phraseId, req.user.id);
-          if (linked.changes) examplesLinked++;
-        }
+        const word = { id: wordId, project_id: project.id, corpus_id: project.corpus_id };
+        if (linkImportedExample(word, exDene, exEng, req.user.id, sourceDoc)) examplesLinked++;
       }
     }
   })();
