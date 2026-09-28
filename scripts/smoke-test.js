@@ -1994,6 +1994,49 @@ if (BASE.includes('localhost')) {
   r = await sa.req('GET', `/api/entries/${fish.id}`);
   check('import: provenance survives archiving', r.data.sources?.[0]?.document_id === impDoc.id);
 
+  // Example-sentence columns: mapped columns become phrase entries linked as
+  // the word's example. Import once WITHOUT them, then again WITH them — the
+  // already-imported and duplicate rows must get their examples backfilled.
+  const wbx = new ExcelJS.Workbook();
+  const wsx = wbx.addWorksheet('Examples');
+  wsx.addRow(['English', 'Dene', 'Dene Example Sentence', 'English Example Sentence']);
+  wsx.addRow(['moose', 'dene-moose-ex', 'Dene moose sentence', 'The moose is near']); // fresh word
+  wsx.addRow(['water', 'tu', 'Tu nezǫ', 'The water is good']);                        // dup of preexisting
+  wsx.addRow(['snow', 'dene-snow-ex', '', '']);                                        // no example
+  r = await upload('examples.xlsx', Buffer.from(await wbx.xlsx.writeBuffer()));
+  const exDoc = await waitReady(r.data.id);
+  const exMapping = { English: 'english', Dene: 'dene',
+    'Dene Example Sentence': 'example_dene', 'English Example Sentence': 'example_english' };
+  r = await sa.req('POST', `/api/documents/${exDoc.id}/create-entries`, { kind: 'phrase', mapping: exMapping });
+  check('import examples: refused for phrase imports', r.status === 400, r.status);
+  r = await sa.req('POST', `/api/documents/${exDoc.id}/create-entries`,
+    { kind: 'word', mapping: { English: 'english', Dene: 'dene' } });
+  check('import examples: plain import first (2 created, 1 dup, no links)',
+    r.status === 200 && r.data.created === 2 && r.data.skipped_duplicates === 1 && r.data.examples_linked === 0,
+    JSON.stringify(r.data));
+  r = await sa.req('POST', `/api/documents/${exDoc.id}/create-entries`, { kind: 'word', mapping: exMapping });
+  check('import examples: re-run with example columns backfills already-imported + dup rows',
+    r.status === 200 && r.data.created === 0 && r.data.skipped_already_imported === 2 &&
+      r.data.skipped_duplicates === 1 && r.data.examples_linked === 2,
+    JSON.stringify(r.data));
+  const moose = db.prepare(`SELECT id FROM entries WHERE corpus_id = ? AND kind = 'word' AND english_text = 'moose'`).get(impCorpus);
+  r = await sa.req('GET', `/api/entries/${moose.id}`);
+  check('import examples: word carries its example sentence',
+    r.data.example?.dene_text === 'Dene moose sentence' && r.data.example?.english_text === 'The moose is near',
+    JSON.stringify(r.data.example));
+  r = await sa.req('GET', `/api/entries/${preexistingId}`);
+  check('import examples: duplicate row linked the example to the existing word',
+    r.data.example?.dene_text === 'Tu nezǫ', JSON.stringify(r.data.example));
+  const exPhraseRow = db.prepare(`SELECT kind, corpus_id FROM entries WHERE id = ?`).get(r.data.example?.id);
+  check('import examples: the example is a phrase entry in the same collection',
+    exPhraseRow?.kind === 'phrase' && exPhraseRow?.corpus_id === impCorpus, JSON.stringify(exPhraseRow));
+  r = await sa.req('POST', `/api/documents/${exDoc.id}/create-entries`, { kind: 'word', mapping: exMapping });
+  check('import examples: third run links nothing new',
+    r.status === 200 && r.data.examples_linked === 0, JSON.stringify(r.data));
+  check('import examples: each example phrase exists exactly once',
+    db.prepare(`SELECT COUNT(*) n FROM entries WHERE corpus_id = ? AND kind = 'phrase' AND dene_text IN ('Dene moose sentence', 'Tu nezǫ')`)
+      .get(impCorpus).n === 2);
+
   // cleanup: entries first (releases the citation), then documents, project, translator.
   for (const e of entries.filter((x) => x.id !== preexistingId)) {
     await sa.req('DELETE', `/api/entries/${e.id}`);

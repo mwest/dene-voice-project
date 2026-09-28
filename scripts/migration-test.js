@@ -40,12 +40,13 @@ check('fresh: apply exits 0', r.status === 0, r.stderr);
   const db = open(freshDir);
   const applied = db.prepare('SELECT * FROM schema_migrations ORDER BY version').all();
   check('fresh: migrations recorded in schema_migrations',
-    applied.length === 11 && applied[0].name === '001_baseline' && applied[1].name === '002_languages' &&
+    applied.length === 13 && applied[0].name === '001_baseline' && applied[1].name === '002_languages' &&
     applied[2].name === '003_speakers_sessions' && applied[3].name === '004_stable_uids' &&
     applied[4].name === '005_corpora' && applied[5].name === '006_flat_roles' &&
     applied[6].name === '007_documents' && applied[7].name === '008_document_search_chunks' &&
     applied[8].name === '009_default_collection' && applied[9].name === '010_optional_entry_campaign' &&
-    applied[10].name === '011_public_site',
+    applied[10].name === '011_public_site' && applied[11].name === '012_site_footer' &&
+    applied[12].name === '013_entry_examples',
     JSON.stringify(applied));
   check('fresh: organization_memberships allows the translator role',
     tableSql(db, 'organization_memberships').includes('translator'));
@@ -139,7 +140,7 @@ check('legacy: apply exits 0', r.status === 0, r.stderr);
 {
   const db = open(legacyDir);
   check('legacy: all migrations recorded',
-    db.prepare(`SELECT COUNT(*) n FROM schema_migrations`).get().n === 11);
+    db.prepare(`SELECT COUNT(*) n FROM schema_migrations`).get().n === 13);
   check('legacy: documents tables exist after upgrade',
     !!tableSql(db, 'documents') && !!tableSql(db, 'ingestion_jobs'));
   check('legacy: semantic chunk table + job type after upgrade',
