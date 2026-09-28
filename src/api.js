@@ -2193,17 +2193,29 @@ const exampleForWords = (phraseId) =>
   ).all(phraseId);
 
 /** Find (by exact texts, corpus + kind scoped) or create a phrase entry —
- *  shared by the example endpoint and the CSV import. Returns the phrase id. */
+ *  shared by the example endpoint and the CSV/spreadsheet imports. Returns
+ *  the phrase id. The example inherits its word's category: a new phrase is
+ *  created with it, and an existing uncategorized phrase is filled in (a
+ *  category someone already set is never overwritten). */
 function findOrCreatePhrase(word, dene, english, userId, sourceDoc = null) {
+  const category = (word.category !== undefined
+    ? word.category
+    : db.prepare('SELECT category FROM entries WHERE id = ?').get(word.id)?.category) || null;
   const existing = db.prepare(
-    `SELECT id FROM entries WHERE corpus_id = ? AND kind = 'phrase'
+    `SELECT id, category FROM entries WHERE corpus_id = ? AND kind = 'phrase'
      AND dene_text = ? AND english_text = ?`
   ).get(word.corpus_id, dene, english);
-  if (existing) return existing.id;
+  if (existing) {
+    if (category && !existing.category) {
+      db.prepare(`UPDATE entries SET category = ?, updated_by = ?, updated_at = datetime('now') WHERE id = ?`)
+        .run(category, userId, existing.id);
+    }
+    return existing.id;
+  }
   const row = db.prepare(
-    `INSERT INTO entries (uid, project_id, corpus_id, kind, dene_text, english_text, source_doc, created_by, updated_by)
-     VALUES (?, ?, ?, 'phrase', ?, ?, ?, ?, ?)`
-  ).run(uuidv7(), word.project_id, word.corpus_id, dene, english, sourceDoc, userId, userId);
+    `INSERT INTO entries (uid, project_id, corpus_id, kind, dene_text, english_text, category, source_doc, created_by, updated_by)
+     VALUES (?, ?, ?, 'phrase', ?, ?, ?, ?, ?, ?)`
+  ).run(uuidv7(), word.project_id, word.corpus_id, dene, english, category, sourceDoc, userId, userId);
   syncEntryTexts(db, row.lastInsertRowid, userId);
   storeEmbedding(row.lastInsertRowid, english);
   return row.lastInsertRowid;

@@ -1999,18 +1999,18 @@ if (BASE.includes('localhost')) {
   // already-imported and duplicate rows must get their examples backfilled.
   const wbx = new ExcelJS.Workbook();
   const wsx = wbx.addWorksheet('Examples');
-  wsx.addRow(['English', 'Dene', 'Dene Example Sentence', 'English Example Sentence']);
-  wsx.addRow(['moose', 'dene-moose-ex', 'Dene moose sentence', 'The moose is near']); // fresh word
-  wsx.addRow(['water', 'tu', 'Tu nezǫ', 'The water is good']);                        // dup of preexisting
-  wsx.addRow(['snow', 'dene-snow-ex', '', '']);                                        // no example
+  wsx.addRow(['English', 'Dene', 'Category', 'Dene Example Sentence', 'English Example Sentence']);
+  wsx.addRow(['moose', 'dene-moose-ex', 'Animals', 'Dene moose sentence', 'The moose is near']); // fresh word
+  wsx.addRow(['water', 'tu', 'Land and Water', 'Tu nezǫ', 'The water is good']);                // dup of preexisting (uncategorized)
+  wsx.addRow(['snow', 'dene-snow-ex', 'Weather', '', '']);                                       // no example
   r = await upload('examples.xlsx', Buffer.from(await wbx.xlsx.writeBuffer()));
   const exDoc = await waitReady(r.data.id);
-  const exMapping = { English: 'english', Dene: 'dene',
+  const exMapping = { English: 'english', Dene: 'dene', Category: 'category',
     'Dene Example Sentence': 'example_dene', 'English Example Sentence': 'example_english' };
   r = await sa.req('POST', `/api/documents/${exDoc.id}/create-entries`, { kind: 'phrase', mapping: exMapping });
   check('import examples: refused for phrase imports', r.status === 400, r.status);
   r = await sa.req('POST', `/api/documents/${exDoc.id}/create-entries`,
-    { kind: 'word', mapping: { English: 'english', Dene: 'dene' } });
+    { kind: 'word', mapping: { English: 'english', Dene: 'dene', Category: 'category' } });
   check('import examples: plain import first (2 created, 1 dup, no links)',
     r.status === 200 && r.data.created === 2 && r.data.skipped_duplicates === 1 && r.data.examples_linked === 0,
     JSON.stringify(r.data));
@@ -2030,7 +2030,22 @@ if (BASE.includes('localhost')) {
   const exPhraseRow = db.prepare(`SELECT kind, corpus_id FROM entries WHERE id = ?`).get(r.data.example?.id);
   check('import examples: the example is a phrase entry in the same collection',
     exPhraseRow?.kind === 'phrase' && exPhraseRow?.corpus_id === impCorpus, JSON.stringify(exPhraseRow));
+  const catOf = (id) => db.prepare('SELECT category FROM entries WHERE id = ?').get(id)?.category ?? null;
+  const moosePhraseId = db.prepare(`SELECT id FROM entries WHERE corpus_id = ? AND kind = 'phrase' AND dene_text = 'Dene moose sentence'`).get(impCorpus).id;
+  const waterPhraseId = r.data.example.id;
+  check("import examples: a new example phrase takes its word's category",
+    catOf(moosePhraseId) === 'Animals', catOf(moosePhraseId));
+  check('import examples: an uncategorized word leaves its example uncategorized',
+    catOf(waterPhraseId) === null, catOf(waterPhraseId));
+  // The existing word gains a category and the moose word changes category:
+  // the next run fills the empty phrase and never overwrites the set one.
+  db.prepare(`UPDATE entries SET category = 'Land and Water' WHERE id = ?`).run(preexistingId);
+  db.prepare(`UPDATE entries SET category = 'Other' WHERE id = ?`).run(moose.id);
   r = await sa.req('POST', `/api/documents/${exDoc.id}/create-entries`, { kind: 'word', mapping: exMapping });
+  check('import examples: re-import fills an uncategorized example phrase from its word',
+    catOf(waterPhraseId) === 'Land and Water', catOf(waterPhraseId));
+  check("import examples: re-import never overwrites an example phrase's category",
+    catOf(moosePhraseId) === 'Animals', catOf(moosePhraseId));
   check('import examples: third run links nothing new',
     r.status === 200 && r.data.examples_linked === 0, JSON.stringify(r.data));
   check('import examples: each example phrase exists exactly once',
