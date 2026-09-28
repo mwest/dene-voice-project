@@ -1,9 +1,11 @@
-// Portal site: a directory of every enabled public Language site, served on
-// the host(s) named by PORTAL_HOSTS (e.g. denekede.ca). One server-rendered
-// page — no session, no cookies, and only PUBLIC numbers: each card counts
-// publicly eligible entries and recordings through the same canonical
-// fragments as the sites themselves, so the portal can never leak private
-// totals. A site whose domain IS a portal host is skipped (no self-links).
+// Portal site: a directory of the public Language sites living UNDER the
+// portal's own host — a portal on denekede.ca lists only *.denekede.ca sites
+// (never the portal host itself, and never sites on unrelated domains such
+// as deline.dene.ca). Served on the host(s) named by PORTAL_HOSTS. One
+// server-rendered page — no session, no cookies, and only PUBLIC numbers:
+// each card counts publicly eligible entries and recordings through the same
+// canonical fragments as the sites themselves, so the portal can never leak
+// private totals.
 import db from '../../../db.js';
 import { defaultCorpusFor } from '../corpus.js';
 import { PUBLIC_ENTRY, PUBLIC_RECORDING } from './eligibility.js';
@@ -15,14 +17,13 @@ const portalHosts = () => new Set(
   (process.env.PORTAL_HOSTS ?? '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean)
 );
 
-function portalSites() {
-  const hosts = portalHosts();
+function portalSites(apex) {
   return db.prepare(
     `SELECT * FROM public_language_settings
      WHERE enabled = 1 AND public_domain IS NOT NULL
      ORDER BY site_title COLLATE NOCASE`
   ).all()
-    .filter((s) => !hosts.has(s.public_domain))
+    .filter((s) => s.public_domain.endsWith(`.${apex}`))
     .map((s) => {
       const corpusId = defaultCorpusFor(db, s.organization_id).id;
       const entries = db.prepare(
@@ -45,8 +46,8 @@ function portalSites() {
 const FOOTER_TEXT =
   'These collections are based on dictionaries created by the Sahtu Divisional Education Council.';
 
-function renderPortal(origin) {
-  const sites = portalSites();
+function renderPortal(origin, apex) {
+  const sites = portalSites(apex);
   const n = (x) => x.toLocaleString('en-CA');
   const cards = sites.map((s) => `
       <a class="card" href="${esc(s.url)}">
@@ -125,7 +126,8 @@ export function portalHandler(req, res, next) {
   const host = req.hostname?.toLowerCase() ?? '';
   if (!hosts.has(host) && !hosts.has(host.replace(/^www\./, ''))) return next();
 
-  const origin = `https://${host.replace(/^www\./, '')}`;
+  const apex = host.replace(/^www\./, '');
+  const origin = `https://${apex}`;
   if (req.path === '/robots.txt') {
     return res.type('text/plain').set('Cache-Control', 'public, max-age=3600')
       .send('User-agent: *\nAllow: /\n');
@@ -133,5 +135,5 @@ export function portalHandler(req, res, next) {
   if (req.path !== '/') return res.redirect(302, '/');
   res.status(200)
     .set({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=60' })
-    .send(renderPortal(origin));
+    .send(renderPortal(origin, apex));
 }
