@@ -19,12 +19,17 @@ export function verifyPassword(plain, hash) {
   return bcrypt.compareSync(plain, hash);
 }
 
+/** A new session IS a sign-in: stamp users.last_login_at (migration 014) in
+ *  the same transaction so the two never disagree. */
 export function createSession(userId) {
   const token = crypto.randomBytes(32).toString('hex');
-  db.prepare(
-    `INSERT INTO sessions (token, user_id, expires_at)
-     VALUES (?, ?, datetime('now', '+${SESSION_DAYS} days'))`
-  ).run(hashSessionToken(token), userId);
+  db.transaction(() => {
+    db.prepare(
+      `INSERT INTO sessions (token, user_id, expires_at)
+       VALUES (?, ?, datetime('now', '+${SESSION_DAYS} days'))`
+    ).run(hashSessionToken(token), userId);
+    db.prepare(`UPDATE users SET last_login_at = datetime('now') WHERE id = ?`).run(userId);
+  })();
   return token; // raw token goes to the cookie only
 }
 

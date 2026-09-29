@@ -94,6 +94,14 @@ function fmtDate(sqlite) {
   return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }
 
+// Last sign-in cell: tracked from migration 014 on, so "Never" can also mean
+// "not since tracking began".
+function lastLoginCell(sqlite) {
+  return sqlite
+    ? `<span title="${esc(fmtDate(sqlite))}">${esc(fmtDate(sqlite))}</span>`
+    : '<span style="color:var(--muted)" title="No sign-in recorded since login tracking began">Never</span>';
+}
+
 let toastTimer;
 function toast(msg, isError = false) {
   const t = $('#toast');
@@ -3620,7 +3628,7 @@ async function renderUsers() {
     </div>
     <div class="card">
       <div class="table-wrap"><table>
-        <thead><tr><th>Name</th><th>Email</th><th>Campaigns</th><th>Entries</th><th>Recordings</th><th>Created</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Email</th><th>Campaigns</th><th>Entries</th><th>Recordings</th><th>Created</th><th>Last login</th><th></th></tr></thead>
         <tbody>
           ${data.users.map((u) => `
             <tr>
@@ -3630,6 +3638,7 @@ async function renderUsers() {
               <td>${u.entry_count}</td>
               <td>${u.audio_count}</td>
               <td>${fmtDate(u.created_at)}</td>
+              <td>${lastLoginCell(u.last_login_at)}</td>
               <td style="white-space:nowrap">
                 <button class="ghost small" data-act="rename" data-id="${u.id}" data-name="${esc(u.name)}">Rename</button>
                 <button class="ghost small" data-act="reset" data-id="${u.id}" data-name="${esc(u.name)}">Reset password</button>
@@ -3750,13 +3759,14 @@ async function renderOrganization() {
       collection; <b>translators</b> work paid recording/translation sessions.</p>
     <div class="card">
       <div class="table-wrap"><table>
-        <thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead>
+        <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Last login</th><th></th></tr></thead>
         <tbody>
           ${members.map((mb) => `
             <tr>
               <td>${esc(mb.name)}</td>
               <td>${esc(mb.email)}</td>
               <td>${roleLabel[mb.role] ?? mb.role}</td>
+              <td>${lastLoginCell(mb.last_login_at)}</td>
               <td>${mb.id === state.me.user.id ? '' :
                 `<button class="danger small" data-org-remove="${org.id}" data-user="${mb.id}">Remove</button>`}</td>
             </tr>`).join('')}

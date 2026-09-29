@@ -40,13 +40,13 @@ check('fresh: apply exits 0', r.status === 0, r.stderr);
   const db = open(freshDir);
   const applied = db.prepare('SELECT * FROM schema_migrations ORDER BY version').all();
   check('fresh: migrations recorded in schema_migrations',
-    applied.length === 13 && applied[0].name === '001_baseline' && applied[1].name === '002_languages' &&
+    applied.length === 14 && applied[0].name === '001_baseline' && applied[1].name === '002_languages' &&
     applied[2].name === '003_speakers_sessions' && applied[3].name === '004_stable_uids' &&
     applied[4].name === '005_corpora' && applied[5].name === '006_flat_roles' &&
     applied[6].name === '007_documents' && applied[7].name === '008_document_search_chunks' &&
     applied[8].name === '009_default_collection' && applied[9].name === '010_optional_entry_campaign' &&
     applied[10].name === '011_public_site' && applied[11].name === '012_site_footer' &&
-    applied[12].name === '013_entry_examples',
+    applied[12].name === '013_entry_examples' && applied[13].name === '014_user_last_login',
     JSON.stringify(applied));
   check('fresh: organization_memberships allows the translator role',
     tableSql(db, 'organization_memberships').includes('translator'));
@@ -54,6 +54,7 @@ check('fresh: apply exits 0', r.status === 0, r.stderr);
     ['organizations', 'projects', 'entries', 'audio_files'].every((t) =>
       db.prepare(`SELECT 1 FROM sqlite_master WHERE name = 'idx_${t}_uid'`).get()));
   check('fresh: checksums recorded', applied.every((m) => m.checksum?.length === 64));
+  check('fresh: users.last_login_at exists (014)', tableSql(db, 'users').includes('last_login_at'));
   const tables = db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all().map((t) => t.name);
   for (const t of ['users', 'organizations', 'organization_apps', 'work_items', 'work_log', 'audio_files',
                    'languages', 'language_varieties', 'orthographies', 'entry_texts',
@@ -140,7 +141,7 @@ check('legacy: apply exits 0', r.status === 0, r.stderr);
 {
   const db = open(legacyDir);
   check('legacy: all migrations recorded',
-    db.prepare(`SELECT COUNT(*) n FROM schema_migrations`).get().n === 13);
+    db.prepare(`SELECT COUNT(*) n FROM schema_migrations`).get().n === 14);
   check('legacy: documents tables exist after upgrade',
     !!tableSql(db, 'documents') && !!tableSql(db, 'ingestion_jobs'));
   check('legacy: semantic chunk table + job type after upgrade',
@@ -185,6 +186,7 @@ check('legacy: apply exits 0', r.status === 0, r.stderr);
     /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
       .test(db.prepare(`SELECT uid FROM entries WHERE id = 1`).get().uid));
   check('legacy: users preserved', db.prepare(`SELECT COUNT(*) n FROM users`).get().n === 2);
+  check('legacy: users.last_login_at added (014)', tableSql(db, 'users').includes('last_login_at'));
   check('legacy: entries preserved with text intact',
     db.prepare(`SELECT COUNT(*) n FROM entries`).get().n === 2 &&
     db.prepare(`SELECT english_text FROM entries WHERE id=1`).get().english_text === 'how are you');
