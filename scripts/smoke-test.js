@@ -172,8 +172,24 @@ r = await sa.req('POST', `/api/projects/${projectId}/members`, {
 check('admin creates member account', r.status === 201, JSON.stringify(r.data));
 const memberId = r.data.user_id;
 
+// Last-login tracking (migration 014): null until the first sign-in, then
+// stamped on every successful password sign-in; failed attempts don't count.
+const lastLoginOf = async () =>
+  ((await sa.req('GET', '/api/users')).data.users ?? []).find((u) => u.id === memberId)?.last_login_at ?? null;
+check('last login: a new account has none', (await lastLoginOf()) === null);
+await member.req('POST', '/api/login', { email: memberEmail, password: 'wrong-password' });
+check('last login: a failed sign-in is not recorded', (await lastLoginOf()) === null);
+
 r = await member.req('POST', '/api/login', { email: memberEmail, password: 'member-pass-123' });
 check('member login', r.status === 200);
+{
+  const at = await lastLoginOf();
+  check('last login: stamped at sign-in (superadmin user list)',
+    !!at && Math.abs(Date.now() - Date.parse(at.replace(' ', 'T') + 'Z')) < 5 * 60 * 1000, at);
+  const orgOfProject = (await sa.req('GET', '/api/projects')).data.projects.find((p) => p.id === projectId).organization_id;
+  const mb = ((await sa.req('GET', `/api/orgs/${orgOfProject}/members`)).data.members ?? []).find((m) => m.id === memberId);
+  check('last login: shown on the organization people list', mb?.last_login_at === at, JSON.stringify(mb));
+}
 
 r = await member.req('GET', '/api/projects');
 // FLAT MODEL: an org member sees every project the organization runs.

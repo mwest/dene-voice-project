@@ -577,7 +577,7 @@ platform.get('/orgs/:id/members', (req, res) => {
   if (!isOrgAdmin(req.user, org.id)) return bad(res, 'Organization admin access required', 403);
   const members = db
     .prepare(
-      `SELECT u.id, u.email, u.name, om.role, om.created_at
+      `SELECT u.id, u.email, u.name, om.role, om.created_at, u.last_login_at
        FROM organization_memberships om JOIN users u ON u.id = om.user_id
        WHERE om.organization_id = ? ORDER BY om.role, u.name`
     )
@@ -1666,7 +1666,7 @@ language.get('/projects/:id/members', requireProjectAdmin, (req, res) => {
     .prepare(
       `SELECT u.id, u.email, u.name,
               CASE WHEN om.role IN ('owner_admin', 'admin') THEN 'admin' ELSE om.role END AS role,
-              om.created_at,
+              om.created_at, u.last_login_at,
               (SELECT COUNT(*) FROM entries e WHERE e.corpus_id = (SELECT corpus_id FROM projects WHERE id = ?)
                  AND e.created_by = u.id) AS entry_count
        FROM organization_memberships om JOIN users u ON u.id = om.user_id
@@ -1773,7 +1773,7 @@ platform.get('/admin/orgs', requireSuperadmin, (req, res) => {
 platform.get('/users', requireSuperadmin, (req, res) => {
   const users = db
     .prepare(
-      `SELECT u.id, u.email, u.name, u.is_superadmin, u.created_at,
+      `SELECT u.id, u.email, u.name, u.is_superadmin, u.created_at, u.last_login_at,
               (SELECT COUNT(*) FROM entries e WHERE e.created_by = u.id) AS entry_count,
               (SELECT COUNT(*) FROM audio_files a WHERE a.uploaded_by = u.id AND a.is_current = 1) AS audio_count,
               (SELECT group_concat(o.name || ' (' ||
